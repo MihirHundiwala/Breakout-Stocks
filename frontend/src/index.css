@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+:root {
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  color: #172033;
+  background: #f4f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+.app-shell {
+  width: min(680px, calc(100% - 2rem));
+  margin: 15vh auto 0;
+  padding: 2rem;
+  border: 1px solid #d8e0eb;
+  border-radius: 1rem;
+  background: #ffffff;
+  box-shadow: 0 1rem 3rem rgb(23 32 51 / 8%);
+}
+
+.app-shell h1 {
+  margin: 0.25rem 0 0.75rem;
+}
+
+.app-shell p {
+  margin: 0;
+  color: #526079;
+}
+
+.eyebrow {
+  color: #2563eb !important;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.system-status {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid;
+  border-radius: 0.75rem;
+}
+
+.system-status h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.system-status__indicator {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 999px;
+}
+
+.system-status--checking {
+  color: #374151;
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.system-status--checking .system-status__indicator {
+  background: #6b7280;
+}
+
+.system-status--ready {
+  color: #166534;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.system-status--ready .system-status__indicator {
+  background: #22c55e;
+}
+
+.system-status--unavailable {
+  color: #991b1b;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.system-status--unavailable .system-status__indicator {
+  background: #ef4444;
+}
+
+.system-status__refresh {
+  font-size: 0.75rem;
+  color: currentColor;
+}

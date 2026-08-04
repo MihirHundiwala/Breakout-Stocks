@@ -1,0 +1,139 @@
+name: breakout-stocks
+
+services:
+  database:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      target: development
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-prefer}
+      DATABASE_CONNECT_TIMEOUT_SECONDS: ${DATABASE_CONNECT_TIMEOUT_SECONDS:-5}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-8}
+      DATABASE_POOL_SIZE: ${BACKEND_DATABASE_POOL_SIZE:-5}
+      DATABASE_MAX_OVERFLOW: ${BACKEND_DATABASE_MAX_OVERFLOW:-5}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-10}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD_HASH_B64: ${ADMIN_PASSWORD_HASH_B64:-}
+      ADMIN_SESSION_TTL_SECONDS: ${ADMIN_SESSION_TTL_SECONDS:-28800}
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-false}
+      NORMAL_USER_WATCHLIST_LIMIT: ${NORMAL_USER_WATCHLIST_LIMIT:-20}
+      APPLICATION_MODE: ${APPLICATION_MODE:-snapshot}
+      UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
+      UPSTOX_TIMEOUT_SECONDS: ${UPSTOX_TIMEOUT_SECONDS:-10}
+      NIFTY_500_INSTRUMENT_KEY: ${NIFTY_500_INSTRUMENT_KEY:-NSE_INDEX|Nifty 500}
+      WORKER_MAXIMUM_ATTEMPTS: ${WORKER_MAXIMUM_ATTEMPTS:-3}
+      WORKER_RETRY_BASE_SECONDS: ${WORKER_RETRY_BASE_SECONDS:-60}
+      WORKER_UPSTOX_REQUESTS_PER_SECOND: ${WORKER_UPSTOX_REQUESTS_PER_SECOND:-1}
+      WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-5}
+      WORKER_STALE_AFTER_SECONDS: ${WORKER_STALE_AFTER_SECONDS:-900}
+      TELEGRAM_NOTIFICATIONS_ENABLED: ${TELEGRAM_NOTIFICATIONS_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_TIMEOUT_SECONDS: ${TELEGRAM_TIMEOUT_SECONDS:-15}
+      TELEGRAM_REQUESTS_PER_SECOND: ${TELEGRAM_REQUESTS_PER_SECOND:-1}
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,backend,test,testserver}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      MAXIMUM_REQUEST_BODY_BYTES: ${MAXIMUM_REQUEST_BODY_BYTES:-65536}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+      ]
+    ports:
+      - "${BACKEND_PORT}:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      - ./backend/alembic.ini:/app/alembic.ini:ro
+      - ./backend/migrations:/app/migrations
+    depends_on:
+      database:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      target: development
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-prefer}
+      DATABASE_CONNECT_TIMEOUT_SECONDS: ${DATABASE_CONNECT_TIMEOUT_SECONDS:-5}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-8}
+      DATABASE_POOL_SIZE: ${WORKER_DATABASE_POOL_SIZE:-3}
+      DATABASE_MAX_OVERFLOW: ${WORKER_DATABASE_MAX_OVERFLOW:-2}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-10}
+      APPLICATION_MODE: ${APPLICATION_MODE:-snapshot}
+      UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
+      UPSTOX_TIMEOUT_SECONDS: ${UPSTOX_TIMEOUT_SECONDS:-10}
+      NIFTY_500_INSTRUMENT_KEY: ${NIFTY_500_INSTRUMENT_KEY:-NSE_INDEX|Nifty 500}
+      WORKER_MAXIMUM_ATTEMPTS: ${WORKER_MAXIMUM_ATTEMPTS:-3}
+      WORKER_RETRY_BASE_SECONDS: ${WORKER_RETRY_BASE_SECONDS:-60}
+      WORKER_UPSTOX_REQUESTS_PER_SECOND: ${WORKER_UPSTOX_REQUESTS_PER_SECOND:-1}
+      WORKER_SCHEDULE_ON_STARTUP: ${WORKER_SCHEDULE_ON_STARTUP:-false}
+      WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-5}
+      WORKER_STALE_AFTER_SECONDS: ${WORKER_STALE_AFTER_SECONDS:-900}
+      TELEGRAM_NOTIFICATIONS_ENABLED: ${TELEGRAM_NOTIFICATIONS_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_TIMEOUT_SECONDS: ${TELEGRAM_TIMEOUT_SECONDS:-15}
+      TELEGRAM_REQUESTS_PER_SECOND: ${TELEGRAM_REQUESTS_PER_SECOND:-1}
+    command: ["python", "-m", "app.scripts.run_worker"]
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic.ini:/app/alembic.ini:ro
+      - ./backend/migrations:/app/migrations
+    depends_on:
+      database:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "${FRONTEND_PORT}:5173"
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  postgres_data:

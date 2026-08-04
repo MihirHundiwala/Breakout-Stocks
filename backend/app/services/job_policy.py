@@ -1,0 +1,6 @@
+TERMINAL_TECHNICAL_DATA_ERRORS = frozenset(
+    {
+        "INSUFFICIENT_LISTING_HISTORY",
+        "PERSISTENT_CANDLE_GAPS",
+    }
+)

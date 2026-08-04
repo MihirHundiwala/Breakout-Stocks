@@ -1,0 +1,45 @@
+name: Verify application
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Create non-secret test configuration
+        run: cp .env.example .env
+
+      - name: Build application images
+        run: docker compose build backend frontend
+
+      - name: Start PostgreSQL
+        run: docker compose up --detach database
+
+      - name: Apply database migrations
+        run: docker compose run --rm backend alembic upgrade head
+
+      - name: Run backend tests
+        run: docker compose run --rm backend python -m pytest
+
+      - name: Run frontend tests
+        run: docker compose run --rm --no-deps frontend npm test
+
+      - name: Build frontend production assets
+        run: docker compose run --rm --no-deps frontend npm run build
+
+      - name: Stop test services
+        if: always()
+        run: docker compose down --volumes
