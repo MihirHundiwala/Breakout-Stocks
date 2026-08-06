@@ -118,8 +118,8 @@ cross-sectional market universes regardless of their size.
 ## 5. Technical screening
 
 The exact thresholds are isolated in the immutable domain configuration and
-must be validated by tests and a historical backtest. `technical-v19` is the
-only active technical algorithm. `technical-v1` through `technical-v18` rows remain
+must be validated by tests and a historical backtest. `technical-v21` is the
+only active technical algorithm. `technical-v1` through `technical-v19` rows remain
 readable historical results and are never reinterpreted.
 
 Every technical-rule change requires an explicit applicability review for both
@@ -168,16 +168,19 @@ other timeframe is demonstrably inapplicable and that reason is documented.
   prices within `max(0.75% of resistance, 0.36 * ATR14)`, deduplicate adjacent
   tests, and require at least two touches separated by three sessions with no
   more than 1% standard-deviation dispersion. Each cluster's resistance is the
-  midpoint between its median body-high acceptance level and median actual-high
-  wick ceiling. Once the required second touch establishes the shelf, later
-  touches cannot erase an intervening breakout event. Two closes above the upper
+  body/wick midpoint, with the highest intervening candle body as a hard lower
+  bound so the line never cuts through accepted bodies. Contacts are revalidated
+  after that raise. The zone uses the median of independent rejection wicks, so
+  one outlier wick cannot set the breakout ceiling. An accepted breakout and
+  return between any plotted contacts invalidates the shelf, including when it
+  occurred before the second plotted contact. Two closes above the upper
   zone confirm acceptance and retire the shelf; one close above the zone followed
   by a decisive close below the support boundary is a failed breakout and also
   permanently retires that shelf. While price remains near an invalidated shelf,
   the result retains the explicit `BREAKOUT_SUPPORT_FAILED` reason.
 - Measure ATR, log-return, and daily-range contraction against preceding
   windows, plus EMA10/EMA20/SMA50 compression. The default target for each
-  contraction ratio is 0.90 and the moving-average spread target is 4%. At
+  contraction ratio is 0.90 and the moving-average spread target is 4%.
   At least one of these four checks must pass, in addition to the body-depth
   gate. The number and strength of the remaining checks contribute graded
   volatility-contraction evidence instead of vetoing an otherwise coherent
@@ -191,11 +194,13 @@ other timeframe is demonstrably inapplicable and that reason is documented.
   distinguishing a strong breakout from a weak breakout only.
 - Classify a price breakout above resistance plus
   `max(0.3% of resistance, 0.20 * ATR14)`. A confirmed `BREAKOUT` requires at
-  least 1.4x volume, a close-location value of at least 0.70, and extension no
-  greater than 1.5 ATR. Otherwise it is `WEAK_BREAKOUT`. During the following
-  five sessions, a candle whose low returns to the prior breakout zone and whose
+  least 1.4x prior 50-session average volume. Otherwise it is
+  `WEAK_BREAKOUT`. Close location and ATR extension remain descriptive for an
+  ordinary Stage 2 breakout; volume alone distinguishes strong from weak.
+  A later candle whose low returns to the prior breakout zone and whose
   close holds resistance minus `max(0.5% of resistance, 0.25 * ATR14)` is a
-  `RETEST`. Body-weighted touch detection allows a small
+  `RETEST` when the original level is no older than twenty daily sessions or
+  eight completed weeks. Body-weighted touch detection allows a small
   `max(0.10% of resistance, 0.10 * ATR14)` approach tolerance. A close below
   the support boundary is `NO_SETUP`. `CONSOLIDATING` additionally requires the
   close to be in the upper 75% of the selected base, within 5% of resistance,
@@ -210,7 +215,8 @@ other timeframe is demonstrably inapplicable and that reason is documented.
   gates still apply. Confirmed Stage 2 classifications always take precedence.
 - Preserve an accepted breakout as `BREAKOUT_HOLDING` while the close remains
   above the original upper resistance zone, for at most five trading sessions
-  on daily analysis or five completed weeks on weekly analysis. During that
+  on daily analysis or three completed weeks on weekly analysis, and retire it
+  earlier when extension exceeds either 3 ATR or 15%. During that
   timeframe-specific window, the same resistance shelf cannot emit another
   `BREAKOUT` or `WEAK_BREAKOUT`; only a materially distinct new shelf can start
   a new breakout lifecycle. A support loss has first precedence, an actual
@@ -238,24 +244,26 @@ Each stock receives one deliberately simple, user-facing technical status:
 
 | Status | Meaning |
 |---|---|
-| `BREAKOUT` | Buffered price breakout with strong volume, strong close, and controlled ATR extension |
+| `BREAKOUT` | Buffered price breakout with at least 1.4x prior-average volume; displayed as Strong breakout |
 | `EARLY_RECOVERY_BREAKOUT` | Strongly confirmed price breakout during a constrained long-moving-average recovery transition |
-| `WEAK_BREAKOUT` | Price cleared buffered resistance but one or more confirmation checks are weak |
-| `BREAKOUT_HOLDING` | A breakout remains above its original upper resistance zone without retesting it, within five trading sessions on daily or five completed weeks on weekly |
+| `WEAK_BREAKOUT` | Price cleared buffered resistance with less than 1.4x prior-average volume |
+| `BREAKOUT_HOLDING` | A breakout remains above its original upper resistance zone without retesting it, within five daily sessions or three completed weeks and without excessive extension |
 | `CONSOLIDATING` | All gates pass, a tight 20-120-session daily or 26-104-week base/resistance exists, and price is within 5% below the line without clearing its upper zone |
 | `RETEST` | Price returned to an eligible prior daily/weekly resistance zone and closed without losing the configured support boundary |
 | `NO_SETUP` | A hard eligibility/resistance requirement failed, or a recent breakout lost its support boundary; reasons explain why |
 
 `FORMING`, `READY`, `FAILED_BREAKOUT`, and `SETUP_FOUND` remain read-only legacy
-values so older snapshots are reproducible. `technical-v19` never emits them.
+values so older snapshots are reproducible. `technical-v21` never emits them.
 
-For every non-`NO_SETUP` v15 snapshot, the same transaction stores one or two
+For every current non-`NO_SETUP` snapshot, the same transaction stores one or two
 immutable chart-evidence rows: the actionable daily and/or weekly base through
-the analysis candle, resistance line and thin zone, rejection dates, candle
+the analysis candle, dotted upper resistance threshold and thin zone, rejection dates, candle
 revision, timeframe, period count, and schema version. The list
 response exposes only availability; an authorized lazy endpoint returns the
-bounded chart payload when the user opens the setup chart. When both timeframes
-exist, the frontend presents them in one accessible slideshow.
+bounded chart payload when the user opens the setup chart. Each immutable chart
+row stores its own independently evaluated timeframe status. When both
+timeframes exist, the frontend presents them together in an accessible responsive
+grid with separate status badges.
 
 The status and score describe research structure, not a trade entry, prediction,
 or guaranteed breakout. The pure domain result and immutable snapshot persist
@@ -608,7 +616,7 @@ not justified at this scale.
 
 The backtest is a local CLI, not a nightly or hosted job.
 
-- Reuse the same `technical-v19` Stage 2, recovery-transition, daily and derived-weekly
+- Reuse the same `technical-v21` Stage 2, recovery-transition, daily and derived-weekly
   base selection, confirmed resistance clustering, contraction, volume quality, breakout/retest,
   optional Nifty 500 relative-strength, state, and scoring rules used by the
   scanner. Do not introduce historical-only filters.
@@ -651,7 +659,7 @@ live application.
   added it. Removal and re-addition reset this persisted membership baseline;
   the value remains unavailable until that session's close is retained.
 - A later UI slice may display the persisted resistance evidence and component
-  metrics with their as-of date and `technical-v19` version. It must label this as research
+  metrics with their as-of date and `technical-v21` version. It must label this as research
   context rather than a target, recommendation, or guaranteed breakout. Each
   stock also provides a safe external TradingView chart link. Viewport-level
   tooltips and action menus must not create table or final-row overflow
@@ -897,7 +905,7 @@ Completed foundation work:
   immutable `AnalysisSnapshot` with internal primary keys, explicit market dates,
   reproducibility metadata, technical status, fundamental-coverage status, and
   current/previous close. Legacy pivot/confirmation columns are retained as
-  nullable migration history and remain unused by `technical-v19`.
+  nullable migration history and remain unused by `technical-v21`.
 - PostgreSQL constraints enforce normalized instrument identity, idempotent
   analysis identity, positive prices, bounded persisted scores, supported
   technical state values, and unused-null legacy pivot fields.
@@ -911,7 +919,7 @@ Completed foundation work:
 - Public `GET /stocks` returns one latest valid analysis per instrument, ordered
   by explicit technical-status group and symbol. It includes each result's
   analysis date, exact price strings, derived one-day percentage change,
-  coverage, source freshness, algorithm version, technical-v19 state, setup
+  coverage, source freshness, algorithm version, technical-v21 state, setup
   score, component scores, selected base/resistance evidence, quality metrics,
   and rejection reasons.
 - The latest-analysis query retains history internally while presenting only the
@@ -1038,7 +1046,7 @@ on administrator deletion. The provider-independent completed-session resolver h
 cutoff time, weekends, explicit holidays, and special weekend session close
 times; watchlist commands no longer trust a frontend-supplied target date.
 
-`technical-v19` supersedes the earlier technical algorithms. It preserves v18's
+`technical-v21` supersedes the earlier technical algorithms. It preserves v20's
 point-in-time 20-120-session scan, duration-sensitive robust body/wick limits,
 breakout-holding lifecycle, while volume remains a strength qualifier after
 price confirmation rather than a resistance-discovery condition. V8
@@ -1095,7 +1103,28 @@ this prevents a marginal probe from becoming a breakout/retest lifecycle event.
 A recent valid consolidating shelf is retained for at most five daily sessions
 or five weekly periods when a marginal probe temporarily makes fresh base
 detection unavailable, allowing a later decisive close to break the same shelf.
-These rules share one implementation across daily and weekly candidates. V7's structure confirms pivots on
+These rules share one implementation across daily and weekly candidates. V20
+raises daily and weekly resistance above every intervening accepted candle body,
+revalidates independent contacts at the raised shelf, and uses a robust median
+wick ceiling instead of allowing one extreme wick to control the zone. A shelf
+that hides acceptance and a return between plotted contacts is invalidated.
+Ordinary Stage 2 breakout strength is volume-only: at least 1.4x is displayed as
+Strong breakout and lower volume as Weak breakout; close location and extension
+remain descriptive. Daily and weekly chart evidence persists its own status and
+the frontend displays both in a responsive grid. V21 keeps that shared
+daily/weekly structure and separates the lifecycle clocks: breakout holding is
+visible for five daily sessions or three completed weeks, while a later retest
+remains eligible for twenty daily sessions or eight completed weeks. Holding is
+retired early above either 3 ATR or 15% from the broken zone. A sequence whose
+maximum close never separates by more than 0.35 ATR above the zone is a marginal
+penetration, even across repeated closes; a return that holds the old support
+rebases resistance to the maximum probe close and remains `CONSOLIDATING` rather
+than becoming `RETEST`. The same 0.35-ATR rule refines only the latest four daily
+or completed-weekly bodies. Independent, separated touches still validate the
+shelf, while chart evidence may mark every rejection inside its shaded zone.
+The chart draws one dotted upper threshold only, clamps touch dots inside the
+zone, and scales to its container without an internal horizontal scrollbar.
+V7's structure confirms pivots on
 body highs, represents rejection as a body-to-wick zone, retires shelves after
 two accepted closes, detects a subsequent recent support failure, and requires
 upper-range five-session approach evidence for consolidation. Nested windows on
@@ -1122,8 +1151,8 @@ The HTTP boundary now applies exact host/origin configuration, a bounded request
 body, security headers, Argon2 authentication, opaque HttpOnly sessions, and
 CSRF validation. Hosted configuration must set secure cookies, production
 hosts/origins, secret backend environment variables, and disable API docs.
-Current verification is 268 backend tests, 46 frontend tests, a passing frontend
-production build, and a migrated PostgreSQL schema at revision `b2d4f6a8c013`.
+Current verification is 275 backend tests, 47 frontend tests, a passing frontend
+production build, and a migrated PostgreSQL schema at revision `c9d1e3f5a702`.
 
 Remaining milestone-7+ work is live instrument import/reconciliation,
 fundamental response adapters, executable retrying worker/nightly commands, fundamental research

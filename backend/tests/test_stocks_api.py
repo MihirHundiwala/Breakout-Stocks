@@ -225,6 +225,7 @@ async def test_setup_chart_is_lazy_and_respects_stock_authorization(
         AnalysisChartSnapshot(
             analysis_snapshot_id=snapshot.id,
             timeframe="DAILY",
+            technical_status=TechnicalStatus.CONSOLIDATING,
             period_count=29,
             window_start=date(2026, 6, 23),
             window_end=snapshot.analysis_date,
@@ -238,6 +239,7 @@ async def test_setup_chart_is_lazy_and_respects_stock_authorization(
         AnalysisChartSnapshot(
             analysis_snapshot_id=snapshot.id,
             timeframe="WEEKLY",
+            technical_status=TechnicalStatus.BREAKOUT_HOLDING,
             period_count=30,
             window_start=date(2026, 1, 1),
             window_end=snapshot.analysis_date,
@@ -285,6 +287,10 @@ async def test_setup_chart_is_lazy_and_respects_stock_authorization(
     assert [item["timeframe"] for item in allowed.json()["charts"]] == [
         "DAILY",
         "WEEKLY",
+    ]
+    assert [item["technical_status"] for item in allowed.json()["charts"]] == [
+        "CONSOLIDATING",
+        "BREAKOUT_HOLDING",
     ]
     assert len(allowed.json()["charts"][0]["candles"]) == 30
     assert Decimal(

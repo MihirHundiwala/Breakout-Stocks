@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from PIL import Image, ImageDraw, ImageFont
 
-from app.models import AnalysisChartSnapshot, AnalysisSnapshot
+from app.models import AnalysisChartSnapshot, AnalysisSnapshot, TechnicalStatus
 
 
 WIDTH = 1280
@@ -70,7 +70,12 @@ def render_setup_chart_png(
     small_font = _font(15, bold=True)
 
     draw.text((40, 28), company_name, fill="#0f172a", font=title_font)
-    status_label = snapshot.technical_status.value.replace("_", " ").title()
+    chart_status = chart.technical_status or snapshot.technical_status
+    status_label = (
+        "Strong Breakout"
+        if chart_status == TechnicalStatus.BREAKOUT
+        else chart_status.value.replace("_", " ").title()
+    )
     draw.text(
         (40, 72),
         f"{trading_symbol}  |  {chart.timeframe.title()} base  |  {chart.period_count} periods  |  {status_label}",

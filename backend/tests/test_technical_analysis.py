@@ -10,6 +10,7 @@ from app.domain.technical_analysis import (
     TechnicalChartEvidence,
     _base_regime_drift,
     _breakout_holding_active,
+    _breakout_retest_eligible,
     _choose_consolidation,
     _completed_weekly_candles,
     _confirmed_pivot_highs,
@@ -17,6 +18,7 @@ from app.domain.technical_analysis import (
     _extend_chart_evidence_to_analysis_date,
     _is_approaching_resistance,
     _resistance_clusters,
+    _resistance_zone,
     _true_ranges,
     analyze_technical_setup,
 )
@@ -201,7 +203,7 @@ def analyze(
     )
 
 
-def test_default_v19_thresholds_are_duration_sensitive() -> None:
+def test_default_v21_thresholds_are_duration_sensitive() -> None:
     config = TechnicalAnalysisConfig()
 
     assert config.consolidation_windows == tuple(range(20, 121))
@@ -259,12 +261,17 @@ def test_default_v19_thresholds_are_duration_sensitive() -> None:
         Decimal("0.38"),
     )
     assert config.weekly_minimum_resistance_touches == 3
-    assert config.algorithm_version == "technical-v19"
+    assert config.algorithm_version == "technical-v21"
     assert config.weekly_contraction_recent_periods == 5
     assert config.weekly_contraction_reference_periods == 20
     assert config.weekly_maximum_ma_spread == Decimal("0.08")
     assert config.failure_window_sessions == 5
-    assert config.weekly_breakout_holding_weeks == 5
+    assert config.weekly_breakout_holding_weeks == 3
+    assert config.retest_window_sessions == 20
+    assert config.weekly_retest_window_weeks == 8
+    assert config.maximum_holding_extension_atr == Decimal("3")
+    assert config.maximum_holding_extension_pct == Decimal("0.15")
+    assert config.maximum_recent_resistance_extension_atr == Decimal("0.35")
     assert TechnicalAnalysisConfig(consolidation_windows=(12, 24)).maximum_base_sessions == 24
 
 
@@ -457,16 +464,15 @@ def test_tight_consolidation_reports_shifted_base_metrics() -> None:
     assert result.tightness_pass_count >= 2
 
 
-def test_confirmed_wick_above_body_shelf_extends_breakout_ceiling() -> None:
+def test_one_confirmed_wick_above_body_shelf_does_not_extend_breakout_ceiling() -> None:
     candles = setup_candles(
-        current_close=Decimal("201.2"),
-        current_high=Decimal("202"),
+        current_close=Decimal("200.6"),
+        current_high=Decimal("201.4"),
         current_low=Decimal("199.5"),
         current_volume=2200,
     )
-    # This candle's body tests the established shelf, while its confirmed wick
-    # rejects a higher price. The close above the body shelf but below that wick
-    # is still consolidation, not a breakout.
+    # One candle's body tests the established shelf while its wick rejects a
+    # higher price. The isolated wick must not move a repeatedly tested zone.
     candles[233] = candle(
         233,
         Decimal("195.2"),
@@ -478,9 +484,9 @@ def test_confirmed_wick_above_body_shelf_extends_breakout_ceiling() -> None:
 
     result = analyze(candles)
 
-    assert result.resistance_zone_upper == Decimal("202")
-    assert result.close_price < result.resistance_zone_upper
-    assert result.status == TechnicalStatus.CONSOLIDATING
+    assert result.resistance_zone_upper == Decimal("200")
+    assert result.close_price > result.resistance_zone_upper
+    assert result.status == TechnicalStatus.BREAKOUT
 
 
 def test_weekly_touch_deduplication_preserves_highest_coherent_wick() -> None:
@@ -512,7 +518,7 @@ def test_weekly_touch_deduplication_preserves_highest_coherent_wick() -> None:
     )
 
     assert clusters
-    assert max(item.rejection_ceiling for item in clusters) == Decimal("101")
+    assert max(item.rejection_ceiling for item in clusters) == Decimal("100.5")
     assert any(len(item.touch_indices) == 2 for item in clusters)
 
 
@@ -748,9 +754,105 @@ def test_refined_cluster_keeps_a_nearby_third_rejection_pivot() -> None:
     assert any(
         cluster.touch_dates
         == (base[3].trading_date, base[7].trading_date, base[12].trading_date)
-        and cluster.resistance == Decimal("564.975")
+        and cluster.resistance == Decimal("567")
         for cluster in clusters
     )
+
+
+def test_chart_marks_every_rejection_near_the_resistance_zone() -> None:
+    base = [candle(index, Decimal("190")) for index in range(24)]
+    for index in (4, 12, 13, 14, 20):
+        base[index] = candle(
+            index,
+            Decimal("196"),
+            open_price=Decimal("195"),
+            high=Decimal("200"),
+            low=Decimal("194"),
+        )
+
+    clusters = _resistance_clusters(
+        base,
+        atr14=Decimal("3"),
+        config=TechnicalAnalysisConfig(),
+    )
+    cluster = max(clusters, key=lambda item: len(item.marker_dates))
+
+    assert len(cluster.touch_indices) >= 2
+    assert set(base[index].trading_date for index in (4, 12, 13, 14, 20)).issubset(
+        set(cluster.marker_dates)
+    )
+
+
+def test_intervening_accepted_bodies_invalidate_the_lower_resistance_shelf() -> None:
+    base = [candle(index, Decimal("190")) for index in range(24)]
+    for index in (4, 18):
+        base[index] = candle(
+            index,
+            Decimal("195"),
+            open_price=Decimal("196"),
+            high=Decimal("200"),
+            low=Decimal("193"),
+        )
+    base[9] = candle(
+        9,
+        Decimal("204"),
+        open_price=Decimal("199"),
+        high=Decimal("205"),
+        low=Decimal("198"),
+    )
+    base[10] = candle(
+        10,
+        Decimal("205"),
+        open_price=Decimal("204"),
+        high=Decimal("206"),
+        low=Decimal("203"),
+    )
+    base[12] = candle(12, Decimal("190"), high=Decimal("192"), low=Decimal("188"))
+
+    clusters = _resistance_clusters(
+        base,
+        atr14=Decimal("3"),
+        config=TechnicalAnalysisConfig(),
+    )
+
+    lower_touch_dates = {base[4].trading_date, base[18].trading_date}
+    assert all(
+        cluster.preinvalidated
+        or not lower_touch_dates.issubset(set(cluster.touch_dates))
+        for cluster in clusters
+    )
+
+
+def test_one_outlier_wick_does_not_set_the_breakout_zone_ceiling() -> None:
+    base = [candle(index, Decimal("1400")) for index in range(22)]
+    touches = (
+        (3, Decimal("1439"), Decimal("1440"), Decimal("1518")),
+        (9, Decimal("1448"), Decimal("1450"), Decimal("1457")),
+        (15, Decimal("1442"), Decimal("1444"), Decimal("1455")),
+    )
+    for index, open_price, close, high in touches:
+        base[index] = candle(
+            index,
+            close,
+            open_price=open_price,
+            high=high,
+            low=Decimal("1395"),
+        )
+
+    clusters = _resistance_clusters(
+        base,
+        atr14=Decimal("30"),
+        config=TechnicalAnalysisConfig(),
+    )
+    cluster = max(clusters, key=lambda item: len(item.touch_indices))
+    _, zone_upper = _resistance_zone(
+        cluster,
+        atr14=Decimal("30"),
+        config=TechnicalAnalysisConfig(),
+    )
+
+    assert cluster.resistance == Decimal("1450.5")
+    assert zone_upper < Decimal("1500")
 
 
 def test_strong_volume_breakout_is_confirmed() -> None:
@@ -841,7 +943,7 @@ def test_base_selection_is_independent_of_base_volume_pattern() -> None:
     assert distribution_result.setup_score == ordinary_result.setup_score
 
 
-def test_breakout_with_long_upper_wick_is_weak() -> None:
+def test_high_volume_breakout_with_long_upper_wick_is_strong() -> None:
     result = analyze(
         setup_candles(
             current_close=Decimal("201.2"),
@@ -851,11 +953,11 @@ def test_breakout_with_long_upper_wick_is_weak() -> None:
         )
     )
 
-    assert result.status == TechnicalStatus.WEAK_BREAKOUT
-    assert "WEAK_BREAKOUT_CLOSE" in result.rejection_reasons
+    assert result.status == TechnicalStatus.BREAKOUT
+    assert "WEAK_BREAKOUT_CLOSE" not in result.rejection_reasons
 
 
-def test_overextended_breakout_is_weak() -> None:
+def test_high_volume_overextended_breakout_is_strong() -> None:
     result = analyze(
         setup_candles(
             current_close=Decimal("205"),
@@ -865,8 +967,8 @@ def test_overextended_breakout_is_weak() -> None:
         )
     )
 
-    assert result.status == TechnicalStatus.WEAK_BREAKOUT
-    assert "BREAKOUT_OVEREXTENDED" in result.rejection_reasons
+    assert result.status == TechnicalStatus.BREAKOUT
+    assert "BREAKOUT_OVEREXTENDED" not in result.rejection_reasons
 
 
 def test_breakout_candle_cannot_create_ordinary_stage2_confirmation() -> None:
@@ -1067,15 +1169,44 @@ def test_breakout_holding_windows_are_timeframe_specific() -> None:
     assert _breakout_holding_active(
         timeframe="WEEKLY",
         breakout_date=breakout_date,
-        current_date=date(2026, 8, 10),
-        sessions_elapsed=25,
+        current_date=date(2026, 7, 27),
+        sessions_elapsed=15,
         config=config,
     )
     assert not _breakout_holding_active(
         timeframe="WEEKLY",
         breakout_date=breakout_date,
-        current_date=date(2026, 8, 17),
-        sessions_elapsed=30,
+        current_date=date(2026, 8, 3),
+        sessions_elapsed=20,
+        config=config,
+    )
+
+    assert _breakout_retest_eligible(
+        timeframe="DAILY",
+        breakout_date=breakout_date,
+        current_date=date(2026, 8, 3),
+        sessions_elapsed=20,
+        config=config,
+    )
+    assert not _breakout_retest_eligible(
+        timeframe="DAILY",
+        breakout_date=breakout_date,
+        current_date=date(2026, 8, 4),
+        sessions_elapsed=21,
+        config=config,
+    )
+    assert _breakout_retest_eligible(
+        timeframe="WEEKLY",
+        breakout_date=breakout_date,
+        current_date=date(2026, 8, 31),
+        sessions_elapsed=40,
+        config=config,
+    )
+    assert not _breakout_retest_eligible(
+        timeframe="WEEKLY",
+        breakout_date=breakout_date,
+        current_date=date(2026, 9, 7),
+        sessions_elapsed=45,
         config=config,
     )
 
@@ -1101,6 +1232,97 @@ def test_breakout_holding_expires_after_five_sessions() -> None:
     result = analyze(candles)
 
     assert result.status == TechnicalStatus.NO_SETUP
+
+
+def test_retest_can_reappear_after_holding_expires_but_before_level_expires() -> None:
+    candles = setup_candles(
+        current_close=Decimal("201.2"),
+        current_high=Decimal("201.5"),
+        current_low=Decimal("199.5"),
+        current_volume=2200,
+    )
+    for index in range(261, 270):
+        candles.append(
+            candle(index, Decimal("204"), high=Decimal("205"), low=Decimal("202"), volume=900)
+        )
+    candles.append(
+        candle(270, Decimal("200.2"), high=Decimal("202"), low=Decimal("198"), volume=900)
+    )
+
+    result = analyze(candles)
+
+    assert result.status == TechnicalStatus.RETEST
+
+
+def test_retest_level_expires_after_twenty_daily_sessions() -> None:
+    candles = setup_candles(
+        current_close=Decimal("201.2"),
+        current_high=Decimal("201.5"),
+        current_low=Decimal("199.5"),
+        current_volume=2200,
+    )
+    for index in range(261, 282):
+        candles.append(
+            candle(index, Decimal("204"), high=Decimal("205"), low=Decimal("202"), volume=900)
+        )
+    candles.append(
+        candle(282, Decimal("200.2"), high=Decimal("202"), low=Decimal("198"), volume=900)
+    )
+
+    result = analyze(candles)
+
+    assert result.status == TechnicalStatus.NO_SETUP
+
+
+def test_overextended_breakout_holding_is_retired() -> None:
+    candles = setup_candles(
+        current_close=Decimal("201.2"),
+        current_high=Decimal("201.5"),
+        current_low=Decimal("199.5"),
+        current_volume=2200,
+    )
+    candles.append(
+        candle(261, Decimal("235"), high=Decimal("237"), low=Decimal("232"), volume=900)
+    )
+
+    result = analyze(candles)
+
+    assert result.status == TechnicalStatus.NO_SETUP
+
+
+def test_recent_marginal_probe_extends_live_shelf_instead_of_becoming_retest() -> None:
+    candles = setup_candles(
+        current_close=Decimal("200.6"),
+        current_high=Decimal("201.4"),
+        current_low=Decimal("199.5"),
+        current_volume=2200,
+    )
+    candles.append(
+        candle(
+            261,
+            Decimal("200.7"),
+            open_price=Decimal("200.4"),
+            high=Decimal("201.5"),
+            low=Decimal("199.8"),
+            volume=900,
+        )
+    )
+    candles.append(
+        candle(
+            262,
+            Decimal("199.5"),
+            open_price=Decimal("201.4"),
+            high=Decimal("202.2"),
+            low=Decimal("198.5"),
+            volume=900,
+        )
+    )
+
+    result = analyze(candles)
+
+    assert result.status == TechnicalStatus.CONSOLIDATING
+    assert result.resistance_price is not None
+    assert result.resistance_price >= Decimal("200.6")
 
 
 def test_failed_breakout_support_becomes_no_setup() -> None:

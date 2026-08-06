@@ -2,11 +2,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Identity, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Date, DateTime, Enum as SqlEnum, ForeignKey, Identity, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.status import TechnicalStatus
 
 
 if TYPE_CHECKING:
@@ -60,6 +61,17 @@ class AnalysisChartSnapshot(Base):
         index=True,
     )
     timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    technical_status: Mapped[TechnicalStatus | None] = mapped_column(
+        SqlEnum(
+            TechnicalStatus,
+            name="ck_analysis_chart_snapshots_technical_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            length=32,
+        ),
+        nullable=True,
+    )
     period_count: Mapped[int] = mapped_column(Integer, nullable=False)
     window_start: Mapped[date] = mapped_column(Date, nullable=False)
     window_end: Mapped[date] = mapped_column(Date, nullable=False)

@@ -116,7 +116,13 @@ class TechnicalAnalysisConfig:
     maximum_early_recovery_sma150_gap: Decimal = Decimal("0.08")
     maximum_early_recovery_sma200_decline: Decimal = Decimal("0.02")
     failure_window_sessions: int = 5
-    weekly_breakout_holding_weeks: int = 5
+    weekly_breakout_holding_weeks: int = 3
+    retest_window_sessions: int = 20
+    weekly_retest_window_weeks: int = 8
+    maximum_holding_extension_atr: Decimal = Decimal("3")
+    maximum_holding_extension_pct: Decimal = Decimal("0.15")
+    recent_resistance_extension_periods: int = 4
+    maximum_recent_resistance_extension_atr: Decimal = Decimal("0.35")
     failure_percent_buffer: Decimal = Decimal("0.005")
     failure_atr_buffer: Decimal = Decimal("0.25")
     retest_touch_percent_tolerance: Decimal = Decimal("0.001")
@@ -138,7 +144,7 @@ class TechnicalAnalysisConfig:
     resistance_quality_weight: Decimal = Decimal("15")
     proximity_weight: Decimal = Decimal("10")
     closing_quality_weight: Decimal = Decimal("5")
-    algorithm_version: str = "technical-v19"
+    algorithm_version: str = "technical-v21"
 
     def __post_init__(self) -> None:
         if not self.consolidation_windows or any(
@@ -238,8 +244,18 @@ class TechnicalAnalysisConfig:
         if (
             self.failure_window_sessions < 1
             or self.weekly_breakout_holding_weeks < 1
+            or self.retest_window_sessions < self.failure_window_sessions
+            or self.weekly_retest_window_weeks
+            < self.weekly_breakout_holding_weeks
         ):
-            raise ValueError("Breakout holding windows must be positive.")
+            raise ValueError("Breakout lifecycle windows must be positive and ordered.")
+        if (
+            self.maximum_holding_extension_atr <= ZERO
+            or not ZERO < self.maximum_holding_extension_pct < ONE
+            or self.recent_resistance_extension_periods < 1
+            or self.maximum_recent_resistance_extension_atr <= ZERO
+        ):
+            raise ValueError("Breakout extension and recent-shelf limits are invalid.")
         if (
             self.minimum_early_recovery_volume_ratio <= ZERO
             or not ZERO <= self.minimum_early_recovery_close_location <= ONE
@@ -403,6 +419,8 @@ class _ResistanceCluster:
     touch_dates: tuple[date, ...]
     dispersion: Decimal
     latest_touch_index: int
+    preinvalidated: bool = False
+    marker_dates: tuple[date, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,7 +635,10 @@ def _chart_evidence(
         resistance_price=candidate.resistance.resistance,
         resistance_zone_lower=zone_lower,
         resistance_zone_upper=zone_upper,
-        resistance_touch_dates=candidate.resistance.touch_dates,
+        resistance_touch_dates=(
+            candidate.resistance.marker_dates
+            or candidate.resistance.touch_dates
+        ),
         candles=chart_candles,
     )
 
@@ -807,24 +828,140 @@ def _deduplicate_touches(
     resistance: Decimal,
     minimum_separation: int,
     use_wicks: bool = False,
+    use_body_or_wick: bool = False,
 ) -> tuple[int, ...]:
+    def distance(index: int) -> Decimal:
+        body_distance = abs(_body_high(candles[index]) - resistance)
+        wick_distance = abs(candles[index].high - resistance)
+        if use_body_or_wick:
+            return min(body_distance, wick_distance)
+        return wick_distance if use_wicks else body_distance
+
     selected: list[int] = []
     for index in sorted(indices):
         if not selected or index - selected[-1] >= minimum_separation:
             selected.append(index)
-        elif abs(
-            (candles[index].high if use_wicks else _body_high(candles[index]))
-            - resistance
-        ) < abs(
-            (
-                candles[selected[-1]].high
-                if use_wicks
-                else _body_high(candles[selected[-1]])
-            )
-            - resistance
-        ):
+        elif distance(index) < distance(selected[-1]):
             selected[-1] = index
     return tuple(selected)
+
+
+def _touches_raised_body_resistance(
+    candle: DailyCandle,
+    *,
+    resistance: Decimal,
+    tolerance: Decimal,
+) -> bool:
+    """A rejection may meet the shelf with its body or its upper wick."""
+    return min(
+        abs(_body_high(candle) - resistance),
+        abs(candle.high - resistance),
+    ) <= tolerance
+
+
+def _extend_resistance_with_recent_bodies(
+    base: Sequence[DailyCandle],
+    *,
+    resistance: Decimal,
+    rejection_ceiling: Decimal,
+    atr14: Decimal,
+    config: TechnicalAnalysisConfig,
+    current_close: Decimal | None,
+) -> tuple[Decimal, Decimal]:
+    """Let a fresh body plateau refine a shelf before calling it broken.
+
+    The extension is deliberately local and bounded. It can absorb a marginal
+    probe around the existing zone (including the open of a red rejection
+    candle), but it cannot chase a decisive move far above the old shelf.
+    """
+    recent = base[-min(config.recent_resistance_extension_periods, len(base)):]
+    recent_body_ceiling = max(_body_high(item) for item in recent)
+    tolerance = max(
+        resistance * config.resistance_percent_tolerance,
+        atr14 * config.resistance_atr_tolerance,
+    )
+    half_width = max(
+        resistance * config.breakout_percent_buffer,
+        atr14 * config.breakout_atr_buffer,
+    )
+    existing_zone_upper = max(resistance + half_width, rejection_ceiling)
+    existing_zone_lower = resistance - half_width
+    if (
+        current_close is not None
+        and existing_zone_lower <= current_close <= existing_zone_upper
+        and recent_body_ceiling <= existing_zone_upper + tolerance
+        and recent_body_ceiling
+        <= existing_zone_upper
+        + atr14 * config.maximum_recent_resistance_extension_atr
+    ):
+        resistance = max(resistance, recent_body_ceiling)
+        rejection_ceiling = max(rejection_ceiling, resistance)
+    return resistance, rejection_ceiling
+
+
+def _resistance_marker_dates(
+    base: Sequence[DailyCandle],
+    *,
+    start_index: int,
+    resistance: Decimal,
+    atr14: Decimal,
+    config: TechnicalAnalysisConfig,
+) -> tuple[date, ...]:
+    """Return every visible rejection while keeping touch independence separate."""
+    tolerance = max(
+        resistance * config.resistance_percent_tolerance,
+        atr14 * config.resistance_atr_tolerance,
+    )
+    zone_floor = resistance - tolerance
+    return tuple(
+        item.trading_date
+        for item in base[start_index:]
+        if item.high >= zone_floor
+        and item.close <= resistance
+        and _body_high(item) <= resistance
+    )
+
+
+def _has_intervening_resistance_failure(
+    candles: Sequence[DailyCandle],
+    *,
+    start_index: int,
+    end_index: int,
+    resistance: Decimal,
+    rejection_ceiling: Decimal,
+    atr14: Decimal,
+    config: TechnicalAnalysisConfig,
+) -> bool:
+    """Reject shelves that conceal acceptance and a return between contacts."""
+    provisional = _ResistanceCluster(
+        resistance=resistance,
+        rejection_ceiling=rejection_ceiling,
+        touch_indices=(start_index, end_index),
+        touch_dates=(
+            candles[start_index].trading_date,
+            candles[end_index].trading_date,
+        ),
+        dispersion=ZERO,
+        latest_touch_index=end_index,
+    )
+    confirmation_ceiling = _breakout_confirmation_ceiling(
+        provisional,
+        atr14=atr14,
+        config=config,
+    )
+    failure_boundary = resistance - max(
+        resistance * config.failure_percent_buffer,
+        atr14 * config.failure_atr_buffer,
+    )
+    accepted = False
+    accepted_count = 0
+    for candle in candles[start_index + 1:end_index]:
+        if candle.close > confirmation_ceiling:
+            accepted = True
+            accepted_count += 1
+        elif accepted and candle.close < failure_boundary:
+            return True
+    return accepted_count >= config.resistance_acceptance_closes
 
 
 def _resistance_clusters(
@@ -832,9 +969,14 @@ def _resistance_clusters(
     *,
     atr14: Decimal,
     config: TechnicalAnalysisConfig,
+    current_close: Decimal | None = None,
 ) -> list[_ResistanceCluster]:
     if config.resistance_pivots_use_wicks:
-        return _wick_resistance_clusters(base, atr14=atr14, config=config)
+        return _wick_resistance_clusters(
+            base,
+            atr14=atr14,
+            config=config,
+        )
     pivots = _confirmed_pivot_highs(
         base,
         left_sessions=config.pivot_left_sessions,
@@ -882,7 +1024,21 @@ def _resistance_clusters(
         core_dispersion = _population_std(core_body_prices) / _median(core_body_prices)
         if core_dispersion > config.maximum_resistance_dispersion:
             continue
-        wick_center = _median([base[index].high for index in core_touches])
+        provisional_wick_ceiling = _median(
+            [base[index].high for index in core_touches]
+        )
+        provisional_resistance = (
+            _median(core_body_prices) + provisional_wick_ceiling
+        ) / Decimal("2")
+        preinvalidated = _has_intervening_resistance_failure(
+            base,
+            start_index=core_touches[0],
+            end_index=core_touches[-1],
+            resistance=provisional_resistance,
+            rejection_ceiling=provisional_wick_ceiling,
+            atr14=atr14,
+            config=config,
+        )
         wick_members = [
             index
             for index in wick_pivots
@@ -890,23 +1046,57 @@ def _resistance_clusters(
             and abs(_body_high(base[index]) - body_level) <= tolerance
         ]
         coherent_rejection_indices = set((*core_touches, *wick_members))
+        shelf_start = min(coherent_rejection_indices)
+        shelf_end = max(coherent_rejection_indices)
+        # A horizontal resistance shelf cannot cut through accepted candle
+        # bodies between its contacts. Raise it to the upper body envelope,
+        # then require the independent contacts to survive at that level.
+        resistance = max(
+            _body_high(base[index])
+            for index in range(shelf_start, shelf_end + 1)
+        )
+        tolerance = max(
+            resistance * config.resistance_percent_tolerance,
+            atr14 * config.resistance_atr_tolerance,
+        )
+        raised_contact_pool = [
+            index
+            for index in set((*pivots, *wick_pivots))
+            if shelf_start <= index <= shelf_end
+            and _touches_raised_body_resistance(
+                base[index],
+                resistance=resistance,
+                tolerance=tolerance,
+            )
+        ]
         touches = _deduplicate_touches(
-            sorted(coherent_rejection_indices),
+            raised_contact_pool,
             candles=base,
-            resistance=wick_center,
+            resistance=resistance,
             minimum_separation=config.minimum_touch_separation_sessions,
-            use_wicks=True,
+            use_body_or_wick=True,
         )
-        body_prices = [_body_high(base[index]) for index in touches]
+        if len(touches) < config.minimum_resistance_touches:
+            continue
         wick_prices = [base[index].high for index in touches]
-        body_level = _median(body_prices)
-        # Bodies establish the shelf's acceptance level. Once that shelf exists,
-        # every confirmed rejection wick whose body tested the same level extends
-        # the breakout ceiling. The wick still cannot establish a shelf alone.
-        rejection_ceiling = max(
-            base[index].high for index in coherent_rejection_indices
+        # Wicks define a zone, not the central acceptance line. A robust median
+        # lets repeated rejections widen that zone without allowing one news wick
+        # to move the breakout threshold on its own.
+        robust_wick_ceiling = _median(wick_prices)
+        resistance = max(
+            resistance,
+            (_median([_body_high(base[index]) for index in touches])
+             + robust_wick_ceiling) / Decimal("2"),
         )
-        resistance = (body_level + _median(wick_prices)) / Decimal("2")
+        rejection_ceiling = max(resistance, robust_wick_ceiling)
+        resistance, rejection_ceiling = _extend_resistance_with_recent_bodies(
+            base,
+            resistance=resistance,
+            rejection_ceiling=rejection_ceiling,
+            atr14=atr14,
+            config=config,
+            current_close=current_close,
+        )
         dispersion = core_dispersion
         clusters[touches] = _ResistanceCluster(
             resistance=resistance,
@@ -915,6 +1105,14 @@ def _resistance_clusters(
             touch_dates=tuple(base[index].trading_date for index in touches),
             dispersion=dispersion,
             latest_touch_index=touches[-1],
+            preinvalidated=preinvalidated,
+            marker_dates=_resistance_marker_dates(
+                base,
+                start_index=shelf_start,
+                resistance=resistance,
+                atr14=atr14,
+                config=config,
+            ),
         )
     return list(clusters.values())
 
@@ -924,6 +1122,7 @@ def _wick_resistance_clusters(
     *,
     atr14: Decimal,
     config: TechnicalAnalysisConfig,
+    current_close: Decimal | None = None,
 ) -> list[_ResistanceCluster]:
     pivots = _confirmed_pivot_highs_by(
         base,
@@ -952,17 +1151,73 @@ def _wick_resistance_clusters(
         if len(touches) < config.minimum_resistance_touches:
             continue
         prices = [base[index].high for index in touches]
-        resistance = _median(prices)
+        initial_resistance = _median(prices)
+        preinvalidated = _has_intervening_resistance_failure(
+            base,
+            start_index=touches[0],
+            end_index=touches[-1],
+            resistance=initial_resistance,
+            rejection_ceiling=initial_resistance,
+            atr14=atr14,
+            config=config,
+        )
+        shelf_start, shelf_end = touches[0], touches[-1]
+        body_ceiling = max(
+            _body_high(base[index])
+            for index in range(shelf_start, shelf_end + 1)
+        )
+        # Weekly pivots are wick-led, so repeated wick contacts may set the
+        # central line; it is still raised whenever a weekly body crossed it.
+        resistance = max(initial_resistance, body_ceiling)
+        tolerance = max(
+            resistance * config.resistance_percent_tolerance,
+            atr14 * config.resistance_atr_tolerance,
+        )
+        touches = _deduplicate_touches(
+            [
+                index
+                for index in pivots
+                if shelf_start <= index <= shelf_end
+                and _touches_raised_body_resistance(
+                    base[index],
+                    resistance=resistance,
+                    tolerance=tolerance,
+                )
+            ],
+            candles=base,
+            resistance=resistance,
+            minimum_separation=config.minimum_touch_separation_sessions,
+            use_body_or_wick=True,
+        )
+        if len(touches) < config.minimum_resistance_touches:
+            continue
+        prices = [base[index].high for index in touches]
         dispersion = _population_std(prices) / resistance
         if dispersion > config.maximum_resistance_dispersion:
             continue
+        resistance, rejection_ceiling = _extend_resistance_with_recent_bodies(
+            base,
+            resistance=resistance,
+            rejection_ceiling=max(resistance, _median(prices)),
+            atr14=atr14,
+            config=config,
+            current_close=current_close,
+        )
         clusters[touches] = _ResistanceCluster(
             resistance=resistance,
-            rejection_ceiling=max(base[index].high for index in raw),
+            rejection_ceiling=rejection_ceiling,
             touch_indices=touches,
             touch_dates=tuple(base[index].trading_date for index in touches),
             dispersion=dispersion,
             latest_touch_index=touches[-1],
+            preinvalidated=preinvalidated,
+            marker_dates=_resistance_marker_dates(
+                base,
+                start_index=shelf_start,
+                resistance=resistance,
+                atr14=atr14,
+                config=config,
+            ),
         )
     return list(clusters.values())
 
@@ -1006,6 +1261,13 @@ def _broken_resistance_state(
     atr14: Decimal,
     config: TechnicalAnalysisConfig,
 ) -> tuple[bool, bool, date | None]:
+    if cluster.preinvalidated:
+        return (
+            True,
+            abs(current_close - cluster.resistance) / cluster.resistance
+            <= config.maximum_consolidating_distance,
+            None,
+        )
     confirmation_ceiling = _breakout_confirmation_ceiling(
         cluster,
         atr14=atr14,
@@ -1239,12 +1501,22 @@ def _broken_candidate_is_relevant(
 ) -> bool:
     if candidate is None or candidate.breakout_date is None:
         return False
-    zone_lower, _ = _resistance_zone(
+    zone_lower, zone_upper = _resistance_zone(
         candidate.resistance,
         atr14=candidate.resistance_atr,
         config=config,
     )
     if current_close < zone_lower:
+        return False
+    if (
+        current_close > zone_upper
+        and not _holding_extension_is_actionable(
+            current_close=current_close,
+            zone_upper=zone_upper,
+            timeframe_atr=candidate.resistance_atr,
+            config=config,
+        )
+    ):
         return False
     elapsed_sessions = sum(
         1
@@ -1277,6 +1549,122 @@ def _breakout_holding_active(
             current_week - breakout_week
         ).days // 7 <= config.weekly_breakout_holding_weeks
     return sessions_elapsed <= config.failure_window_sessions
+
+
+def _breakout_retest_eligible(
+    *,
+    timeframe: str,
+    breakout_date: date,
+    current_date: date,
+    sessions_elapsed: int,
+    config: TechnicalAnalysisConfig,
+) -> bool:
+    if timeframe == "WEEKLY":
+        breakout_week = breakout_date - timedelta(days=breakout_date.weekday())
+        current_week = current_date - timedelta(days=current_date.weekday())
+        return (
+            current_week - breakout_week
+        ).days // 7 <= config.weekly_retest_window_weeks
+    return sessions_elapsed <= config.retest_window_sessions
+
+
+def _holding_extension_is_actionable(
+    *,
+    current_close: Decimal,
+    zone_upper: Decimal,
+    timeframe_atr: Decimal,
+    config: TechnicalAnalysisConfig,
+) -> bool:
+    extension = max(ZERO, current_close - zone_upper)
+    if extension == ZERO:
+        return True
+    return (
+        timeframe_atr > ZERO
+        and extension / timeframe_atr <= config.maximum_holding_extension_atr
+        and extension / zone_upper <= config.maximum_holding_extension_pct
+    )
+
+
+def _result_timeframe_atr(
+    result: TechnicalAnalysisResult,
+    *,
+    fallback: Decimal,
+    config: TechnicalAnalysisConfig,
+) -> Decimal:
+    timeframe = result.consolidation_timeframe or "DAILY"
+    evidence = next(
+        (item for item in result.chart_evidence if item.timeframe == timeframe),
+        None,
+    )
+    if evidence is None or len(evidence.candles) < 2:
+        return fallback
+    ranges = _true_ranges(evidence.candles)
+    return _average(ranges[-min(config.atr_sessions, len(ranges)):])
+
+
+def _marginal_breakout_rebase(
+    result: TechnicalAnalysisResult,
+    *,
+    ordered: Sequence[DailyCandle],
+    current: DailyCandle,
+    timeframe_atr: Decimal,
+    config: TechnicalAnalysisConfig,
+) -> TechnicalAnalysisResult | None:
+    """Turn an unaccepted, marginal penetration back into consolidation."""
+    if (
+        result.resistance_price is None
+        or result.resistance_zone_upper is None
+        or timeframe_atr <= ZERO
+    ):
+        return None
+    probe_bars = [
+        item
+        for item in ordered
+        if result.analysis_date <= item.trading_date < current.trading_date
+    ]
+    if not probe_bars:
+        return None
+    maximum_probe_close = max(item.close for item in probe_bars)
+    extension = maximum_probe_close - result.resistance_zone_upper
+    if (
+        extension <= ZERO
+        or extension / timeframe_atr
+        > config.maximum_recent_resistance_extension_atr
+    ):
+        return None
+
+    resistance = max(result.resistance_price, maximum_probe_close)
+    half_width = max(
+        resistance * config.breakout_percent_buffer,
+        timeframe_atr * config.breakout_atr_buffer,
+    )
+    zone_lower = resistance - half_width
+    zone_upper = max(resistance + half_width, result.resistance_zone_upper)
+    chart_evidence = tuple(
+        replace(
+            evidence,
+            status=TechnicalStatus.CONSOLIDATING,
+            resistance_price=resistance,
+            resistance_zone_lower=zone_lower,
+            resistance_zone_upper=zone_upper,
+            resistance_touch_dates=tuple(
+                dict.fromkeys((*evidence.resistance_touch_dates, current.trading_date))
+            ),
+        )
+        if evidence.timeframe == (result.consolidation_timeframe or "DAILY")
+        else evidence
+        for evidence in result.chart_evidence
+    )
+    return replace(
+        result,
+        status=TechnicalStatus.CONSOLIDATING,
+        resistance_price=resistance,
+        resistance_zone_lower=zone_lower,
+        resistance_zone_upper=zone_upper,
+        breakout_extension_atr=None,
+        rejection_reasons=(),
+        chart_evidence=chart_evidence,
+    )
 
 
 def _choose_consolidation(
@@ -1359,6 +1747,7 @@ def _choose_consolidation(
             base,
             atr14=atr14,
             config=cluster_config,
+            current_close=current_close,
         ):
             if (
                 timeframe == "WEEKLY"
@@ -1584,6 +1973,7 @@ def _analyze_latest(
     benchmark_candles: Sequence[DailyCandle] | None,
     config: TechnicalAnalysisConfig,
     detect_failure: bool,
+    timeframe_filter: str | None = None,
 ) -> TechnicalAnalysisResult:
     closes = [item.close for item in ordered]
     highs = [item.high for item in ordered]
@@ -1695,6 +2085,18 @@ def _analyze_latest(
             require_launch_area=True,
         )
 
+    empty_search = _ConsolidationSearch(
+        candidate=None,
+        broken_candidate=None,
+        support_failed=False,
+    )
+    if timeframe_filter == "DAILY":
+        weekly_search = empty_search
+    elif timeframe_filter == "WEEKLY":
+        daily_search = empty_search
+    elif timeframe_filter is not None:
+        raise ValueError(f"Unsupported timeframe filter: {timeframe_filter}")
+
     daily_actionable = _candidate_is_actionable(
         daily_search.candidate,
         current_close=current.close,
@@ -1791,8 +2193,12 @@ def _analyze_latest(
             current.close
             - candidate_zone[1]
         )
-        / atr14
-        if candidate_zone is not None and atr14 > ZERO
+        / (candidate.resistance_atr or atr14)
+        if (
+            candidate_zone is not None
+            and candidate is not None
+            and (candidate.resistance_atr or atr14) > ZERO
+        )
         else None
     )
     setup_score = _weighted_setup_score(
@@ -1851,20 +2257,11 @@ def _analyze_latest(
                 breakout_volume_ratio is not None
                 and breakout_volume_ratio >= config.minimum_breakout_volume_ratio
             )
-            strong_close = close_location_value >= config.minimum_close_location_value
-            controlled_extension = (
-                breakout_extension is not None
-                and breakout_extension <= config.maximum_breakout_extension_atr
-            )
             if not strong_volume:
                 rejection_reasons.append("WEAK_BREAKOUT_VOLUME")
-            if not strong_close:
-                rejection_reasons.append("WEAK_BREAKOUT_CLOSE")
-            if not controlled_extension:
-                rejection_reasons.append("BREAKOUT_OVEREXTENDED")
             status = (
                 TechnicalStatus.BREAKOUT
-                if strong_volume and strong_close and controlled_extension
+                if strong_volume
                 else TechnicalStatus.WEAK_BREAKOUT
             )
         elif (
@@ -1922,6 +2319,7 @@ def _analyze_latest(
                 benchmark_candles=benchmark_candles,
                 config=config,
                 detect_failure=False,
+                timeframe_filter=timeframe_filter,
             )
             if (
                 previous_result.status != TechnicalStatus.CONSOLIDATING
@@ -1953,22 +2351,12 @@ def _analyze_latest(
                 and breakout_volume_ratio
                 >= config.minimum_breakout_volume_ratio
             )
-            strong_close = (
-                close_location_value >= config.minimum_close_location_value
-            )
-            controlled_extension = (
-                breakout_extension <= config.maximum_breakout_extension_atr
-            )
             rejection_reasons.clear()
             if not strong_volume:
                 rejection_reasons.append("WEAK_BREAKOUT_VOLUME")
-            if not strong_close:
-                rejection_reasons.append("WEAK_BREAKOUT_CLOSE")
-            if not controlled_extension:
-                rejection_reasons.append("BREAKOUT_OVEREXTENDED")
             status = (
                 TechnicalStatus.BREAKOUT
-                if strong_volume and strong_close and controlled_extension
+                if strong_volume
                 else TechnicalStatus.WEAK_BREAKOUT
             )
             setup_context = previous_result
@@ -1977,14 +2365,14 @@ def _analyze_latest(
     breakout_context: TechnicalAnalysisResult | None = None
     if detect_failure:
         weekly_cutoff = current.trading_date - timedelta(
-            weeks=config.weekly_breakout_holding_weeks
+            weeks=config.weekly_retest_window_weeks
         )
         for sessions_ago in range(1, len(ordered)):
             if len(ordered) - sessions_ago < config.minimum_sessions:
                 break
             prior_date = ordered[-sessions_ago - 1].trading_date
             if (
-                sessions_ago > config.failure_window_sessions
+                sessions_ago > config.retest_window_sessions
                 and prior_date < weekly_cutoff
             ):
                 break
@@ -1993,6 +2381,7 @@ def _analyze_latest(
                 benchmark_candles=benchmark_candles,
                 config=config,
                 detect_failure=False,
+                timeframe_filter=timeframe_filter,
             )
             if "BREAKOUT_SUPPORT_FAILED" in previous_result.rejection_reasons:
                 break
@@ -2002,7 +2391,7 @@ def _analyze_latest(
                 TechnicalStatus.WEAK_BREAKOUT,
             } or previous_result.resistance_price is None:
                 continue
-            if not _breakout_holding_active(
+            if not _breakout_retest_eligible(
                 timeframe=previous_result.consolidation_timeframe or "DAILY",
                 breakout_date=previous_result.analysis_date,
                 current_date=current.trading_date,
@@ -2010,6 +2399,11 @@ def _analyze_latest(
                 config=config,
             ):
                 continue
+            lifecycle_atr = _result_timeframe_atr(
+                previous_result,
+                fallback=atr14,
+                config=config,
+            )
             if candidate is not None:
                 midpoint = (
                     candidate.resistance.resistance
@@ -2017,7 +2411,7 @@ def _analyze_latest(
                 ) / Decimal("2")
                 shelf_tolerance = max(
                     midpoint * config.resistance_percent_tolerance,
-                    atr14 * config.resistance_atr_tolerance,
+                    lifecycle_atr * config.resistance_atr_tolerance,
                 )
                 if (
                     abs(
@@ -2034,7 +2428,7 @@ def _analyze_latest(
             failure_boundary = previous_result.resistance_price - max(
                 previous_result.resistance_price
                 * config.failure_percent_buffer,
-                atr14 * config.failure_atr_buffer,
+                lifecycle_atr * config.failure_atr_buffer,
             )
             if current.close < failure_boundary:
                 status = TechnicalStatus.NO_SETUP
@@ -2048,17 +2442,59 @@ def _analyze_latest(
                 + max(
                     previous_result.resistance_price
                     * config.retest_touch_percent_tolerance,
-                    atr14 * config.retest_touch_atr_tolerance,
+                    lifecycle_atr * config.retest_touch_atr_tolerance,
                 )
                 and current.close >= previous_zone_lower
             ):
-                status = TechnicalStatus.RETEST
-                breakout_context = previous_result
+                rebased_context = _marginal_breakout_rebase(
+                    previous_result,
+                    ordered=ordered,
+                    current=current,
+                    timeframe_atr=lifecycle_atr,
+                    config=config,
+                )
+                status = (
+                    TechnicalStatus.CONSOLIDATING
+                    if rebased_context is not None
+                    else TechnicalStatus.RETEST
+                )
+                breakout_context = rebased_context or previous_result
                 rejection_reasons.clear()
-            elif current.close > previous_zone_upper:
+            elif (
+                current.close > previous_zone_upper
+                and _breakout_holding_active(
+                    timeframe=(
+                        previous_result.consolidation_timeframe or "DAILY"
+                    ),
+                    breakout_date=previous_result.analysis_date,
+                    current_date=current.trading_date,
+                    sessions_elapsed=sessions_ago,
+                    config=config,
+                )
+                and _holding_extension_is_actionable(
+                    current_close=current.close,
+                    zone_upper=previous_zone_upper,
+                    timeframe_atr=lifecycle_atr,
+                    config=config,
+                )
+            ):
                 status = TechnicalStatus.BREAKOUT_HOLDING
                 breakout_context = previous_result
                 rejection_reasons.clear()
+            elif current.close > previous_zone_upper:
+                status = TechnicalStatus.NO_SETUP
+                breakout_context = None
+                rejection_reasons.clear()
+                if _breakout_holding_active(
+                    timeframe=(
+                        previous_result.consolidation_timeframe or "DAILY"
+                    ),
+                    breakout_date=previous_result.analysis_date,
+                    current_date=current.trading_date,
+                    sessions_elapsed=sessions_ago,
+                    config=config,
+                ):
+                    rejection_reasons.append("BREAKOUT_OVEREXTENDED")
             break
 
     context = breakout_context or setup_context
@@ -2280,9 +2716,37 @@ def analyze_technical_setup(
         raise IncompleteCandleHistoryError(
             f"At least {required} complete candles are required."
         )
-    return _analyze_latest(
+    result = _analyze_latest(
         ordered,
         benchmark_candles=benchmark_candles,
         config=config,
         detect_failure=True,
+    )
+    evidence_timeframes = {item.timeframe for item in result.chart_evidence}
+    if len(evidence_timeframes) < 2:
+        return result
+
+    selected_timeframe = result.consolidation_timeframe
+    chart_evidence: list[TechnicalChartEvidence] = []
+    for evidence in result.chart_evidence:
+        if evidence.timeframe == selected_timeframe:
+            chart_evidence.append(replace(evidence, status=result.status))
+            continue
+        scoped = _analyze_latest(
+            ordered,
+            benchmark_candles=benchmark_candles,
+            config=config,
+            detect_failure=True,
+            timeframe_filter=evidence.timeframe,
+        )
+        chart_evidence.extend(
+            item
+            for item in scoped.chart_evidence
+            if item.timeframe == evidence.timeframe
+        )
+    return replace(
+        result,
+        chart_evidence=tuple(
+            sorted(chart_evidence, key=lambda item: item.timeframe)
+        ),
     )

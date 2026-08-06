@@ -9,6 +9,7 @@ import type {
 
 interface AnalysisChartSlideResponse {
   timeframe: "DAILY" | "WEEKLY";
+  technical_status: TechnicalStatus;
   period_count: number;
   resistance_price: string;
   resistance_zone_lower: string;
@@ -41,6 +42,7 @@ export async function getStockChart(
     technicalStatus: data.technical_status,
     charts: data.charts.map((chart): AnalysisChartData => ({
       timeframe: chart.timeframe,
+      technicalStatus: chart.technical_status,
       periodCount: chart.period_count,
       resistancePrice: chart.resistance_price,
       resistanceZoneLower: chart.resistance_zone_lower,

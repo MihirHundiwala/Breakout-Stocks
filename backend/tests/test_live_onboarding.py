@@ -357,7 +357,7 @@ async def test_handler_persists_candles_before_analysis(
     ]
     assert snapshot is not None
     assert snapshot.source == "UPSTOX"
-    assert snapshot.algorithm_version == "technical-v19"
+    assert snapshot.algorithm_version == "technical-v21"
     assert snapshot.setup_score is not None
     assert snapshot.stage2_score is not None
     assert snapshot.rejection_reasons is not None
@@ -374,7 +374,7 @@ async def test_handler_persists_candles_before_analysis(
     assert chart.period_count == snapshot.consolidation_window
     assert chart.window_start == snapshot.consolidation_start
     assert chart.window_end == snapshot.analysis_date
-    assert chart.schema_version == "technical-chart-v3"
+    assert chart.schema_version == "technical-chart-v4"
     assert 20 <= len(chart.candles) <= 130
     assert chart.resistance_zone_lower < chart.resistance_price
     assert chart.resistance_zone_upper > chart.resistance_price
@@ -643,7 +643,7 @@ async def test_handler_persists_analysis_when_benchmark_is_unavailable(
         )
     )
     assert snapshot is not None
-    assert snapshot.algorithm_version == "technical-v19"
+    assert snapshot.algorithm_version == "technical-v21"
     assert snapshot.relative_strength_score is None
 
 

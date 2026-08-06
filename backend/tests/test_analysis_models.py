@@ -241,6 +241,7 @@ async def test_analysis_snapshot_stores_daily_and_weekly_chart_evidence(
     snapshot.chart_snapshots = [
         AnalysisChartSnapshot(
             timeframe="DAILY",
+            technical_status=TechnicalStatus.CONSOLIDATING,
             period_count=20,
             window_start=date(2026, 6, 1),
             window_end=date(2026, 7, 22),
@@ -253,6 +254,7 @@ async def test_analysis_snapshot_stores_daily_and_weekly_chart_evidence(
         ),
         AnalysisChartSnapshot(
             timeframe="WEEKLY",
+            technical_status=TechnicalStatus.BREAKOUT_HOLDING,
             period_count=26,
             window_start=date(2026, 1, 23),
             window_end=date(2026, 7, 22),
@@ -271,6 +273,13 @@ async def test_analysis_snapshot_stores_daily_and_weekly_chart_evidence(
     assert len(snapshot.chart_snapshots) == 2
     assert all(item.analysis_snapshot_id == snapshot.id for item in snapshot.chart_snapshots)
     assert {item.timeframe for item in snapshot.chart_snapshots} == {"DAILY", "WEEKLY"}
+    assert {
+        item.timeframe: item.technical_status
+        for item in snapshot.chart_snapshots
+    } == {
+        "DAILY": TechnicalStatus.CONSOLIDATING,
+        "WEEKLY": TechnicalStatus.BREAKOUT_HOLDING,
+    }
 
 
 @pytest.mark.anyio

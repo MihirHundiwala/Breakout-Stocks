@@ -111,6 +111,7 @@ class AnalysisChartCandle(BaseModel):
 
 class AnalysisChartSlide(BaseModel):
     timeframe: str
+    technical_status: TechnicalStatus
     period_count: int
     resistance_price: Decimal
     resistance_zone_lower: Decimal

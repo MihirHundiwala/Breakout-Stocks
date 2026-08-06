@@ -34,6 +34,7 @@ const stock: StockListItem = {
 
 const dailyChart: AnalysisChartData = {
   timeframe: "DAILY",
+  technicalStatus: "CONSOLIDATING",
   periodCount: 20,
   resistancePrice: "200.00",
   resistanceZoneLower: "199.40",
@@ -61,6 +62,7 @@ const chartData: AnalysisChartsData = {
     {
       ...dailyChart,
       timeframe: "WEEKLY",
+      technicalStatus: "BREAKOUT_HOLDING",
       periodCount: 30,
       resistancePrice: "205.00",
       resistanceZoneLower: "203.00",
@@ -87,46 +89,65 @@ describe("SetupChartModal", () => {
     const { container } = render(<SetupChartModal stock={stock} onClose={onClose} />);
 
     expect(screen.getByRole("dialog")).toHaveTextContent(stock.companyName);
-    expect(screen.getByRole("img", { name: /setup candlestick chart/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: /setup candlestick chart/i })).toHaveLength(2);
     expect(screen.getByText(/20 sessions/i)).toBeInTheDocument();
+    expect(screen.getByText(/30 weeks/i)).toBeInTheDocument();
+    expect(screen.getByText("Daily timeframe")).toBeInTheDocument();
+    expect(screen.getByText("Weekly timeframe")).toBeInTheDocument();
+    expect(screen.getByText("Consolidating")).toBeInTheDocument();
+    expect(screen.getByText("Breakout holding")).toBeInTheDocument();
     expect(screen.getByText(/199.40–₹200.60/)).toBeInTheDocument();
     expect(screen.queryByText(/technical-v5/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/orange dots mark/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/breakout threshold/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/^Threshold/i)).toHaveLength(2);
     expect(screen.getByText(/₹198.00/)).toBeInTheDocument();
     expect(screen.getByText(/1-day: \+1.02%/)).toBeInTheDocument();
 
-    const breakoutThreshold = container.querySelector<SVGLineElement>(
+    const breakoutThresholds = Array.from(container.querySelectorAll<SVGLineElement>(
       '[data-chart-role="breakout-threshold"]',
-    );
+    ));
     const resistanceTouches = Array.from(
       container.querySelectorAll<SVGCircleElement>('[data-chart-role="resistance-touch"]'),
     );
-    expect(breakoutThreshold).not.toBeNull();
-    expect(resistanceTouches).toHaveLength(2);
+    expect(breakoutThresholds).toHaveLength(2);
+    expect(container.querySelectorAll('[data-chart-role="resistance-line"]')).toHaveLength(0);
+    expect(resistanceTouches).toHaveLength(4);
+    for (const chart of Array.from(container.querySelectorAll<SVGSVGElement>("svg"))) {
+      expect(chart).toHaveClass("w-full");
+      expect(chart).not.toHaveClass("min-w-[620px]");
+      expect(chart.parentElement).toHaveClass("overflow-hidden");
+      expect(chart.parentElement).not.toHaveClass("overflow-x-auto");
+    }
     for (const touch of resistanceTouches) {
       const date = touch.dataset.date;
-      const wick = container.querySelector<SVGLineElement>(
+      const chart = touch.closest("svg");
+      const wick = chart?.querySelector<SVGLineElement>(
         `[data-chart-role="candle-wick"][data-date="${date}"]`,
       );
+      const breakoutThreshold = chart?.querySelector<SVGLineElement>(
+        '[data-chart-role="breakout-threshold"]',
+      );
+      const resistanceZone = chart?.querySelector<SVGRectElement>(
+        '[data-chart-role="resistance-zone"]',
+      );
       expect(wick).not.toBeNull();
-      expect(touch.getAttribute("cy")).toBe(wick?.getAttribute("y1"));
+      expect(Number(touch.getAttribute("cy"))).toBeGreaterThanOrEqual(
+        Number(breakoutThreshold?.getAttribute("y1")),
+      );
+      expect(Number(touch.getAttribute("cy"))).toBeLessThanOrEqual(
+        Number(resistanceZone?.getAttribute("y"))
+          + Number(resistanceZone?.getAttribute("height")),
+      );
+      expect(touch.getAttribute("cy")).not.toBe(wick?.getAttribute("y1"));
       expect(touch.getAttribute("cy")).not.toBe(breakoutThreshold?.getAttribute("y1"));
     }
 
-    fireEvent.click(screen.getByRole("button", { name: "Next setup chart" }));
-    expect(screen.getByText("Weekly long base")).toBeInTheDocument();
-    expect(screen.getByText(/30 weeks/i)).toBeInTheDocument();
-    expect(screen.getByText("2 of 2")).toBeInTheDocument();
-    expect(screen.getByText(/₹205.00/)).toBeInTheDocument();
-    expect(screen.getByText(/This week: \+2.50%/)).toBeInTheDocument();
     const weeklyAxisLabels = Array.from(
       container.querySelectorAll<SVGTextElement>(
         '[data-chart-role="x-axis-label"]',
       ),
-    );
+    ).filter((label) => label.textContent?.includes("2026"));
     expect(weeklyAxisLabels).toHaveLength(4);
-    expect(weeklyAxisLabels.every((label) => label.textContent?.includes("2026"))).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Close setup chart" }));
     expect(onClose).toHaveBeenCalledOnce();

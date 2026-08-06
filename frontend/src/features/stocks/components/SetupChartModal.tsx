@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef } from "react";
 
 import { useStockChart } from "../hooks/useStockChart";
 import type { AnalysisChartData, StockListItem } from "../types";
+import { TechnicalStatusBadge } from "./StatusBadge";
 
 
 const WIDTH = 820;
@@ -83,19 +84,19 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
   );
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-2 sm:p-4">
+    <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 p-1.5 sm:p-3">
       <svg
         role="img"
         aria-label={`${companyName} ${data.timeframe.toLowerCase()} setup candlestick chart from ${data.candles[0].date} to ${data.candles.at(-1)?.date}`}
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        className="min-w-[620px] w-full"
+        className="block h-auto w-full"
       >
         <rect x={LEFT} y={TOP} width={plotWidth} height={PRICE_BOTTOM - TOP} fill="white" />
         <text
           x="14"
           y={(TOP + PRICE_BOTTOM) / 2}
           textAnchor="middle"
-          fontSize="11"
+          fontSize="18"
           fontWeight="600"
           fill="#334155"
           transform={`rotate(-90 14 ${(TOP + PRICE_BOTTOM) / 2})`}
@@ -105,12 +106,13 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
         {yTicks.map((tick) => (
           <g key={tick}>
             <line x1={LEFT} x2={WIDTH - RIGHT} y1={y(tick)} y2={y(tick)} stroke="#e2e8f0" strokeWidth="1" />
-            <text x={LEFT - 8} y={y(tick) + 4} textAnchor="end" fontSize="11" fontWeight="600" fill="#475569">
+            <text x={LEFT - 8} y={y(tick) + 5} textAnchor="end" fontSize="16" fontWeight="600" fill="#475569">
               {priceLabel(tick)}
             </text>
           </g>
         ))}
         <rect
+          data-chart-role="resistance-zone"
           x={LEFT}
           y={y(zoneUpper)}
           width={plotWidth}
@@ -133,6 +135,10 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
           const color = bullish ? "#059669" : "#dc2626";
           const bodyTop = y(Math.max(item.openValue, item.closeValue));
           const bodyBottom = y(Math.min(item.openValue, item.closeValue));
+          const touchPrice = Math.max(
+            zoneLower,
+            Math.min(zoneUpper, Math.max(item.openValue, item.closeValue)),
+          );
           return (
             <g key={item.date}>
               <line
@@ -157,9 +163,10 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
                 <circle
                   data-chart-role="resistance-touch"
                   data-date={item.date}
+                  data-price={touchPrice}
                   cx={x(index)}
-                  cy={y(item.highValue)}
-                  r="3.5"
+                  cy={y(touchPrice)}
+                  r="5"
                   fill="#f59e0b"
                   stroke="white"
                   strokeWidth="1.5"
@@ -177,7 +184,7 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
           );
         })}
         <line x1={LEFT} x2={WIDTH - RIGHT} y1={VOLUME_BOTTOM} y2={VOLUME_BOTTOM} stroke="#cbd5e1" />
-        <text x={LEFT - 8} y={VOLUME_TOP + 8} textAnchor="end" fontSize="10" fontWeight="600" fill="#475569">Volume</text>
+        <text x={LEFT - 8} y={VOLUME_TOP + 10} textAnchor="end" fontSize="14" fontWeight="600" fill="#475569">Volume</text>
         {xTickIndexes.map((index) => (
           <text
             key={index}
@@ -185,7 +192,7 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
             x={x(index)}
             y={422}
             textAnchor="middle"
-            fontSize="11"
+            fontSize="15"
             fontWeight="600"
             fill="#475569"
           >
@@ -206,10 +213,7 @@ export function SetupChartModal({
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
-  const [activeIndex, setActiveIndex] = useState(0);
   const chartQuery = useStockChart(stock?.instrumentId ?? null);
-
-  useEffect(() => setActiveIndex(0), [stock?.instrumentId]);
 
   useEffect(() => {
     if (!stock) return;
@@ -229,10 +233,10 @@ export function SetupChartModal({
   }, [onClose, stock]);
 
   if (!stock) return null;
-  const activeHeaderChart = chartQuery.data?.charts[
-    Math.min(activeIndex, chartQuery.data.charts.length - 1)
-  ] ?? null;
-  const priceSummary = latestPriceSummary(activeHeaderChart);
+  const headerChart = chartQuery.data?.charts.find(
+    (chart) => chart.timeframe === "DAILY",
+  ) ?? chartQuery.data?.charts[0] ?? null;
+  const priceSummary = latestPriceSummary(headerChart);
 
   return (
     <div
@@ -245,7 +249,7 @@ export function SetupChartModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="flex max-h-[94vh] w-full flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-w-4xl sm:rounded-3xl"
+        className="flex max-h-[94vh] w-full flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-w-7xl sm:rounded-3xl"
       >
         <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
           <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -282,28 +286,34 @@ export function SetupChartModal({
             <div className="min-h-72 rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-800" role="alert">
               The stored chart evidence could not be loaded. Close this popup and try again.
             </div>
-          ) : (() => {
-            const charts = chartQuery.data.charts;
-            const active = charts[Math.min(activeIndex, charts.length - 1)];
-            return (
-            <div className="relative">
-              <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-medium text-slate-600">
-                <span className="rounded-full bg-blue-50 px-2.5 py-1 font-bold text-blue-700">{active.timeframe === "WEEKLY" ? "Weekly long base" : "Daily base"}</span>
-                <span>Breakout threshold: ₹{priceLabel(Number(active.resistanceZoneUpper))}</span>
-                <span>Zone: ₹{priceLabel(Number(active.resistanceZoneLower))}–₹{priceLabel(Number(active.resistanceZoneUpper))}</span>
-                <span>{active.periodCount} {active.timeframe === "WEEKLY" ? "weeks" : "sessions"}</span>
-              </div>
-              <SetupCandlestickChart data={active} companyName={chartQuery.data.companyName} />
-              {charts.length > 1 && (
-                <>
-                  <button type="button" onClick={() => setActiveIndex((activeIndex - 1 + charts.length) % charts.length)} aria-label="Previous setup chart" className="absolute left-1 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-blue-200 bg-white text-2xl font-bold text-blue-600 shadow-md hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-600 sm:-left-5">‹</button>
-                  <button type="button" onClick={() => setActiveIndex((activeIndex + 1) % charts.length)} aria-label="Next setup chart" className="absolute right-1 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-blue-200 bg-white text-2xl font-bold text-blue-600 shadow-md hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-600 sm:-right-5">›</button>
-                  <p className="mt-3 text-center text-xs font-bold text-slate-500">{activeIndex + 1} of {charts.length}</p>
-                </>
-              )}
+          ) : (
+            <div className={`grid gap-5 ${chartQuery.data.charts.length > 1 ? "xl:grid-cols-2" : ""}`}>
+              {chartQuery.data.charts.map((chart) => (
+                <article
+                  key={chart.timeframe}
+                  className="min-w-0 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4"
+                >
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                        {chart.timeframe === "WEEKLY" ? "Weekly timeframe" : "Daily timeframe"}
+                      </p>
+                      <h3 className="mt-1 text-base font-bold text-slate-950">
+                        {chart.timeframe === "WEEKLY" ? "Long-base setup" : "Recent-base setup"}
+                      </h3>
+                    </div>
+                    <TechnicalStatusBadge status={chart.technicalStatus} />
+                  </div>
+                  <div className="mb-3 grid grid-cols-1 gap-2 rounded-2xl bg-slate-50 p-3 text-xs font-medium text-slate-600 sm:grid-cols-3">
+                    <span>Threshold <strong className="text-slate-900">₹{priceLabel(Number(chart.resistanceZoneUpper))}</strong></span>
+                    <span>Zone <strong className="text-slate-900">₹{priceLabel(Number(chart.resistanceZoneLower))}–₹{priceLabel(Number(chart.resistanceZoneUpper))}</strong></span>
+                    <span>Length <strong className="text-slate-900">{chart.periodCount} {chart.timeframe === "WEEKLY" ? "weeks" : "sessions"}</strong></span>
+                  </div>
+                  <SetupCandlestickChart data={chart} companyName={chartQuery.data.companyName} />
+                </article>
+              ))}
             </div>
-            );
-          })()}
+          )}
         </div>
       </section>
     </div>

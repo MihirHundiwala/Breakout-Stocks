@@ -285,6 +285,9 @@ async def get_stock_chart(
         charts=[
             {
                 "timeframe": chart.timeframe,
+                "technical_status": (
+                    chart.technical_status or record.analysis.technical_status
+                ),
                 "period_count": chart.period_count,
                 "resistance_price": chart.resistance_price,
                 "resistance_zone_lower": chart.resistance_zone_lower,

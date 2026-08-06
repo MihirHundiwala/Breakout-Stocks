@@ -64,6 +64,7 @@ export interface AnalysisChartCandle {
 
 export interface AnalysisChartData {
   timeframe: "DAILY" | "WEEKLY";
+  technicalStatus: TechnicalStatus;
   periodCount: number;
   resistancePrice: string;
   resistanceZoneLower: string;

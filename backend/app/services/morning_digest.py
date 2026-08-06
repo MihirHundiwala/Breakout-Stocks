@@ -51,6 +51,8 @@ class MorningDigestResult:
 
 
 def _status_label(status: TechnicalStatus) -> str:
+    if status == TechnicalStatus.BREAKOUT:
+        return "Strong Breakout"
     return status.value.replace("_", " ").title()
 
 

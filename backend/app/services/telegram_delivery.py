@@ -13,6 +13,7 @@ from app.models import (
     AnalysisSnapshot,
     Company,
     Instrument,
+    TechnicalStatus,
     TelegramNotification,
     TelegramNotificationStatus,
     TelegramConnection,
@@ -178,6 +179,8 @@ async def _load_material(
 
 def _status_label(value: object) -> str:
     raw = getattr(value, "value", str(value))
+    if str(raw) == TechnicalStatus.BREAKOUT.value:
+        return "Strong Breakout"
     return str(raw).replace("_", " ").title()
 
 

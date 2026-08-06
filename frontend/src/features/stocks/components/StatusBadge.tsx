@@ -40,7 +40,7 @@ const technicalStatusAppearance: Record<
       "bg-amber-50 text-amber-800 ring-amber-600/20",
   },
   BREAKOUT: {
-    label: "Breakout",
+    label: "Strong breakout",
     className:
       "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
   },

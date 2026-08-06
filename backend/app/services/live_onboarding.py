@@ -60,7 +60,7 @@ NIFTY_500_BENCHMARK_NAME = "Nifty 500"
 ANALYSIS_HISTORY_CALENDAR_DAYS = 600
 HISTORICAL_CANDLE_SOURCE = "UPSTOX"
 INTRADAY_CANDLE_SOURCE = "UPSTOX_INTRADAY"
-CHART_SCHEMA_VERSION = "technical-chart-v3"
+CHART_SCHEMA_VERSION = "technical-chart-v4"
 
 
 def _should_notify_setup_change(
@@ -105,6 +105,7 @@ def _chart_values(
         return [
             {
                 "timeframe": evidence.timeframe,
+                "technical_status": evidence.status,
                 "period_count": evidence.period_count,
                 "window_start": evidence.candles[0].trading_date,
                 "window_end": evidence.candles[-1].trading_date,
@@ -142,6 +143,7 @@ def _chart_values(
         return []
     return [{
         "timeframe": result.consolidation_timeframe or "DAILY",
+        "technical_status": result.status,
         "period_count": result.consolidation_window or len(selected) - 1,
         "window_start": selected[0].trading_date,
         "window_end": selected[-1].trading_date,
@@ -401,7 +403,7 @@ class LiveOnboardingHandler:
                 ranges=benchmark_ranges,
             )
         except ProviderError:
-            # Relative strength is a required technical-v19 component. Stock
+            # Relative strength is a required technical-v21 component. Stock
             # analysis remains valid when the benchmark provider is unavailable.
             fetched_benchmark = []
         benchmark_candles = _merge_candles(
