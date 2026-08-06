@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { useStockChart } from "../hooks/useStockChart";
 import type { AnalysisChartData, StockListItem } from "../types";
@@ -96,7 +96,7 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
           x="14"
           y={(TOP + PRICE_BOTTOM) / 2}
           textAnchor="middle"
-          fontSize="18"
+          fontSize="12"
           fontWeight="600"
           fill="#334155"
           transform={`rotate(-90 14 ${(TOP + PRICE_BOTTOM) / 2})`}
@@ -106,7 +106,7 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
         {yTicks.map((tick) => (
           <g key={tick}>
             <line x1={LEFT} x2={WIDTH - RIGHT} y1={y(tick)} y2={y(tick)} stroke="#e2e8f0" strokeWidth="1" />
-            <text x={LEFT - 8} y={y(tick) + 5} textAnchor="end" fontSize="16" fontWeight="600" fill="#475569">
+            <text x={LEFT - 8} y={y(tick) + 4} textAnchor="end" fontSize="11" fontWeight="600" fill="#475569">
               {priceLabel(tick)}
             </text>
           </g>
@@ -137,7 +137,12 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
           const bodyBottom = y(Math.min(item.openValue, item.closeValue));
           const touchPrice = Math.max(
             zoneLower,
-            Math.min(zoneUpper, Math.max(item.openValue, item.closeValue)),
+            Math.min(breakoutThreshold, item.highValue),
+          );
+          const confirmedZoneTouch = (
+            touchDates.has(item.date)
+            && item.highValue >= zoneLower
+            && item.lowValue <= zoneUpper
           );
           return (
             <g key={item.date}>
@@ -159,17 +164,17 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
                 fill={color}
                 rx="0.5"
               />
-              {touchDates.has(item.date) && (
+              {confirmedZoneTouch && (
                 <circle
                   data-chart-role="resistance-touch"
                   data-date={item.date}
                   data-price={touchPrice}
                   cx={x(index)}
                   cy={y(touchPrice)}
-                  r="5"
+                  r="3"
                   fill="#f59e0b"
                   stroke="white"
-                  strokeWidth="1.5"
+                  strokeWidth="1"
                 />
               )}
               <rect
@@ -184,7 +189,7 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
           );
         })}
         <line x1={LEFT} x2={WIDTH - RIGHT} y1={VOLUME_BOTTOM} y2={VOLUME_BOTTOM} stroke="#cbd5e1" />
-        <text x={LEFT - 8} y={VOLUME_TOP + 10} textAnchor="end" fontSize="14" fontWeight="600" fill="#475569">Volume</text>
+        <text x={LEFT - 8} y={VOLUME_TOP + 9} textAnchor="end" fontSize="10" fontWeight="600" fill="#475569">Volume</text>
         {xTickIndexes.map((index) => (
           <text
             key={index}
@@ -192,7 +197,7 @@ function SetupCandlestickChart({ data, companyName }: { data: AnalysisChartData;
             x={x(index)}
             y={422}
             textAnchor="middle"
-            fontSize="15"
+            fontSize="11"
             fontWeight="600"
             fill="#475569"
           >
@@ -213,6 +218,7 @@ export function SetupChartModal({
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [selectedTimeframe, setSelectedTimeframe] = useState<"DAILY" | "WEEKLY">("DAILY");
   const chartQuery = useStockChart(stock?.instrumentId ?? null);
 
   useEffect(() => {
@@ -232,11 +238,18 @@ export function SetupChartModal({
     };
   }, [onClose, stock]);
 
+  useEffect(() => {
+    setSelectedTimeframe("DAILY");
+  }, [stock?.instrumentId]);
+
   if (!stock) return null;
   const headerChart = chartQuery.data?.charts.find(
     (chart) => chart.timeframe === "DAILY",
   ) ?? chartQuery.data?.charts[0] ?? null;
   const priceSummary = latestPriceSummary(headerChart);
+  const selectedChart = chartQuery.data?.charts.find(
+    (chart) => chart.timeframe === selectedTimeframe,
+  ) ?? chartQuery.data?.charts[0] ?? null;
 
   return (
     <div
@@ -279,7 +292,7 @@ export function SetupChartModal({
             ×
           </button>
         </header>
-        <div className="overflow-y-auto p-4 sm:p-6">
+        <div data-testid="chart-modal-content" className="overflow-y-auto p-4 md:overflow-hidden md:p-5">
           {chartQuery.isPending ? (
             <div className="flex min-h-72 items-center justify-center text-sm font-medium text-slate-500" role="status">Loading setup chart…</div>
           ) : chartQuery.isError || !chartQuery.data ? (
@@ -287,31 +300,59 @@ export function SetupChartModal({
               The stored chart evidence could not be loaded. Close this popup and try again.
             </div>
           ) : (
-            <div className={`grid gap-5 ${chartQuery.data.charts.length > 1 ? "xl:grid-cols-2" : ""}`}>
-              {chartQuery.data.charts.map((chart) => (
-                <article
-                  key={chart.timeframe}
-                  className="min-w-0 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4"
-                >
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
-                        {chart.timeframe === "WEEKLY" ? "Weekly timeframe" : "Daily timeframe"}
+            <div className="min-w-0 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm md:p-4">
+              {chartQuery.data.charts.length > 1 && (
+                <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Chart timeframe">
+                  {chartQuery.data.charts.map((chart) => {
+                    const selected = chart.timeframe === selectedChart?.timeframe;
+                    return (
+                      <button
+                        key={chart.timeframe}
+                        type="button"
+                        aria-label={`${chart.timeframe === "WEEKLY" ? "Weekly" : "Daily"} — ${chart.technicalStatus.replaceAll("_", " ").toLowerCase()}`}
+                        aria-pressed={selected}
+                        onClick={() => setSelectedTimeframe(chart.timeframe)}
+                        className={`flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-left transition ${
+                          selected
+                            ? "border-blue-300 bg-blue-50 text-blue-950"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        <span className="text-xs font-bold uppercase tracking-wide">
+                          {chart.timeframe === "WEEKLY" ? "Weekly" : "Daily"}
+                        </span>
+                        <TechnicalStatusBadge status={chart.technicalStatus} />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedChart && (
+                <article className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_11rem] md:items-start">
+                  <div className="min-w-0 md:order-1">
+                    <SetupCandlestickChart data={selectedChart} companyName={chartQuery.data.companyName} />
+                  </div>
+                  <aside
+                    data-chart-role="setup-summary"
+                    className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-50 p-3 text-xs font-medium text-slate-600 sm:grid-cols-4 md:order-2 md:grid-cols-1"
+                  >
+                    <div className="col-span-2 sm:col-span-1">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+                        {selectedChart.timeframe === "WEEKLY" ? "Weekly timeframe" : "Daily timeframe"}
                       </p>
-                      <h3 className="mt-1 text-base font-bold text-slate-950">
-                        {chart.timeframe === "WEEKLY" ? "Long-base setup" : "Recent-base setup"}
+                      <h3 className="mt-1 text-sm font-bold text-slate-950">
+                        {selectedChart.timeframe === "WEEKLY" ? "Long-base setup" : "Recent-base setup"}
                       </h3>
+                      {chartQuery.data.charts.length === 1 && (
+                        <div className="mt-2"><TechnicalStatusBadge status={selectedChart.technicalStatus} /></div>
+                      )}
                     </div>
-                    <TechnicalStatusBadge status={chart.technicalStatus} />
-                  </div>
-                  <div className="mb-3 grid grid-cols-1 gap-2 rounded-2xl bg-slate-50 p-3 text-xs font-medium text-slate-600 sm:grid-cols-3">
-                    <span>Threshold <strong className="text-slate-900">₹{priceLabel(Number(chart.resistanceZoneUpper))}</strong></span>
-                    <span>Zone <strong className="text-slate-900">₹{priceLabel(Number(chart.resistanceZoneLower))}–₹{priceLabel(Number(chart.resistanceZoneUpper))}</strong></span>
-                    <span>Length <strong className="text-slate-900">{chart.periodCount} {chart.timeframe === "WEEKLY" ? "weeks" : "sessions"}</strong></span>
-                  </div>
-                  <SetupCandlestickChart data={chart} companyName={chartQuery.data.companyName} />
+                    <span>Threshold<br /><strong className="text-slate-900">₹{priceLabel(Number(selectedChart.resistanceZoneUpper))}</strong></span>
+                    <span>Zone<br /><strong className="text-slate-900">₹{priceLabel(Number(selectedChart.resistanceZoneLower))}–₹{priceLabel(Number(selectedChart.resistanceZoneUpper))}</strong></span>
+                    <span>Length<br /><strong className="text-slate-900">{selectedChart.periodCount} {selectedChart.timeframe === "WEEKLY" ? "weeks" : "sessions"}</strong></span>
+                  </aside>
                 </article>
-              ))}
+              )}
             </div>
           )}
         </div>

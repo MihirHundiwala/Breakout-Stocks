@@ -118,8 +118,8 @@ cross-sectional market universes regardless of their size.
 ## 5. Technical screening
 
 The exact thresholds are isolated in the immutable domain configuration and
-must be validated by tests and a historical backtest. `technical-v21` is the
-only active technical algorithm. `technical-v1` through `technical-v19` rows remain
+must be validated by tests and a historical backtest. `technical-v22` is the
+only active technical algorithm. `technical-v1` through `technical-v21` rows remain
 readable historical results and are never reinterpreted.
 
 Every technical-rule change requires an explicit applicability review for both
@@ -253,7 +253,7 @@ Each stock receives one deliberately simple, user-facing technical status:
 | `NO_SETUP` | A hard eligibility/resistance requirement failed, or a recent breakout lost its support boundary; reasons explain why |
 
 `FORMING`, `READY`, `FAILED_BREAKOUT`, and `SETUP_FOUND` remain read-only legacy
-values so older snapshots are reproducible. `technical-v21` never emits them.
+values so older snapshots are reproducible. `technical-v22` never emits them.
 
 For every current non-`NO_SETUP` snapshot, the same transaction stores one or two
 immutable chart-evidence rows: the actionable daily and/or weekly base through
@@ -500,18 +500,20 @@ not justified at this scale.
 
 - FastAPI handles membership-triggered onboarding and admin manual scans using
   durable records and visible market-language progress.
-- GitHub Actions runs CI and the scheduled 4:00 PM IST end-of-day scan. Provider
-  acceptance testing must verify that the completed NSE daily session is
+- GitHub Actions currently runs CI only. Hosted research schedules are
+  intentionally disabled until the backend and PostgreSQL database are
+  deployed and their secret stores are configured.
+- After hosting acceptance, restore a 4:00 PM IST end-of-day workflow. Provider
+  acceptance testing must first verify that the completed NSE daily session is
   consistently available by then. If data is delayed, the scan records a
   retryable incomplete-data result and retries with bounded backoff rather than
-  analyzing stale or partial candles.
-- The GitHub-hosted runner executes the scanner command directly; it does not
-  depend on waking a sleeping web service.
-- A separate GitHub Actions schedule invokes the ephemeral morning digest at
-  8:30 AM IST on weekdays. The command confirms that the date is an open NSE
-  session before sending, so exchange holidays remain silent. It reads the
-  latest stored research and sends directly to Telegram without creating a
-  notification row. A missed or failed run expires instead of delivering stale
+  analyzing stale or partial candles. The GitHub-hosted runner may execute the
+  scanner directly instead of depending on a sleeping web service.
+- After Telegram and hosted database acceptance, restore a separate 8:30 AM IST
+  weekday workflow for the ephemeral morning digest. The command must confirm
+  that the date is an open NSE session before sending, so exchange holidays
+  remain silent. It reads the latest stored research and sends directly without
+  creating a notification row; a missed run expires instead of delivering stale
   morning information later.
 - The 4:00 PM IST nightly command fills candle gaps, evaluates technical setups,
   and updates forward outcomes. It does not
@@ -616,7 +618,7 @@ not justified at this scale.
 
 The backtest is a local CLI, not a nightly or hosted job.
 
-- Reuse the same `technical-v21` Stage 2, recovery-transition, daily and derived-weekly
+- Reuse the same `technical-v22` Stage 2, recovery-transition, daily and derived-weekly
   base selection, confirmed resistance clustering, contraction, volume quality, breakout/retest,
   optional Nifty 500 relative-strength, state, and scoring rules used by the
   scanner. Do not introduce historical-only filters.
@@ -659,7 +661,7 @@ live application.
   added it. Removal and re-addition reset this persisted membership baseline;
   the value remains unavailable until that session's close is retained.
 - A later UI slice may display the persisted resistance evidence and component
-  metrics with their as-of date and `technical-v21` version. It must label this as research
+  metrics with their as-of date and `technical-v22` version. It must label this as research
   context rather than a target, recommendation, or guaranteed breakout. Each
   stock also provides a safe external TradingView chart link. Viewport-level
   tooltips and action menus must not create table or final-row overflow
@@ -761,7 +763,7 @@ vertical milestone.
 | React frontend | Vercel |
 | FastAPI backend | Render |
 | PostgreSQL | Neon |
-| CI and nightly scan | GitHub Actions |
+| CI now; nightly scan after hosting | GitHub Actions |
 
 Railway is not part of the selected plan. Current provider pricing, limits,
 authentication, and API documentation must be rechecked from official sources
@@ -905,7 +907,7 @@ Completed foundation work:
   immutable `AnalysisSnapshot` with internal primary keys, explicit market dates,
   reproducibility metadata, technical status, fundamental-coverage status, and
   current/previous close. Legacy pivot/confirmation columns are retained as
-  nullable migration history and remain unused by `technical-v21`.
+  nullable migration history and remain unused by `technical-v22`.
 - PostgreSQL constraints enforce normalized instrument identity, idempotent
   analysis identity, positive prices, bounded persisted scores, supported
   technical state values, and unused-null legacy pivot fields.
@@ -919,7 +921,7 @@ Completed foundation work:
 - Public `GET /stocks` returns one latest valid analysis per instrument, ordered
   by explicit technical-status group and symbol. It includes each result's
   analysis date, exact price strings, derived one-day percentage change,
-  coverage, source freshness, algorithm version, technical-v21 state, setup
+  coverage, source freshness, algorithm version, technical-v22 state, setup
   score, component scores, selected base/resistance evidence, quality metrics,
   and rejection reasons.
 - The latest-analysis query retains history internally while presenting only the
@@ -1046,7 +1048,7 @@ on administrator deletion. The provider-independent completed-session resolver h
 cutoff time, weekends, explicit holidays, and special weekend session close
 times; watchlist commands no longer trust a frontend-supplied target date.
 
-`technical-v21` supersedes the earlier technical algorithms. It preserves v20's
+`technical-v22` supersedes the earlier technical algorithms. It preserves v20's
 point-in-time 20-120-session scan, duration-sensitive robust body/wick limits,
 breakout-holding lifecycle, while volume remains a strength qualifier after
 price confirmation rather than a resistance-discovery condition. V8
@@ -1122,8 +1124,15 @@ rebases resistance to the maximum probe close and remains `CONSOLIDATING` rather
 than becoming `RETEST`. The same 0.35-ATR rule refines only the latest four daily
 or completed-weekly bodies. Independent, separated touches still validate the
 shelf, while chart evidence may mark every rejection inside its shaded zone.
-The chart draws one dotted upper threshold only, clamps touch dots inside the
-zone, and scales to its container without an internal horizontal scrollbar.
+The chart draws one dotted upper threshold only and scales to its container
+without an internal horizontal scrollbar. V22 makes chart markers confirmed
+reversal evidence instead of general proximity evidence: a wick must enter the
+displayed zone, avoid body acceptance above it, and be followed by lower highs
+plus a meaningful retreat during the next two periods. This shared rule runs on
+daily candles and completed weekly candles using that timeframe's ATR. A marker
+is drawn at the wick high when it stops inside the zone, or at the dotted upper
+threshold when the wick reaches or crosses it; it can never appear outside the
+zone. Independent separated contacts still control analytical shelf validity.
 V7's structure confirms pivots on
 body highs, represents rejection as a body-to-wick zone, retires shelves after
 two accepted closes, detects a subsequent recent support failure, and requires
@@ -1153,6 +1162,11 @@ CSRF validation. Hosted configuration must set secure cookies, production
 hosts/origins, secret backend environment variables, and disable API docs.
 Current verification is 275 backend tests, 47 frontend tests, a passing frontend
 production build, and a migrated PostgreSQL schema at revision `c9d1e3f5a702`.
+
+The setup-chart modal keeps one readable timeframe chart active at a time while
+showing every available daily/weekly status in a compact selector. On laptop
+screens, setup metadata moves beside the chart so the complete plot fits without
+an internal scrollbar; on narrow screens, that metadata reflows above the chart.
 
 Remaining milestone-7+ work is live instrument import/reconciliation,
 fundamental response adapters, executable retrying worker/nightly commands, fundamental research

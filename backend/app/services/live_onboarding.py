@@ -403,7 +403,7 @@ class LiveOnboardingHandler:
                 ranges=benchmark_ranges,
             )
         except ProviderError:
-            # Relative strength is a required technical-v21 component. Stock
+            # Relative strength is a required technical-v22 component. Stock
             # analysis remains valid when the benchmark provider is unavailable.
             fetched_benchmark = []
         benchmark_candles = _merge_candles(

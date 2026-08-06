@@ -203,7 +203,7 @@ def analyze(
     )
 
 
-def test_default_v21_thresholds_are_duration_sensitive() -> None:
+def test_default_v22_thresholds_are_duration_sensitive() -> None:
     config = TechnicalAnalysisConfig()
 
     assert config.consolidation_windows == tuple(range(20, 121))
@@ -261,7 +261,7 @@ def test_default_v21_thresholds_are_duration_sensitive() -> None:
         Decimal("0.38"),
     )
     assert config.weekly_minimum_resistance_touches == 3
-    assert config.algorithm_version == "technical-v21"
+    assert config.algorithm_version == "technical-v22"
     assert config.weekly_contraction_recent_periods == 5
     assert config.weekly_contraction_reference_periods == 20
     assert config.weekly_maximum_ma_spread == Decimal("0.08")
@@ -388,6 +388,7 @@ def test_long_weekly_shelf_uses_two_separated_wick_rejections() -> None:
     assert search.candidate.timeframe == "WEEKLY"
     assert search.candidate.window >= 40
     assert len(search.candidate.resistance.touch_dates) == 2
+    assert search.candidate.resistance.marker_dates == search.candidate.resistance.touch_dates
 
 
 def test_confirmed_stage2_stock_is_consolidating() -> None:
@@ -759,7 +760,7 @@ def test_refined_cluster_keeps_a_nearby_third_rejection_pivot() -> None:
     )
 
 
-def test_chart_marks_every_rejection_near_the_resistance_zone() -> None:
+def test_chart_marks_only_confirmed_reversals_that_reached_the_resistance_zone() -> None:
     base = [candle(index, Decimal("190")) for index in range(24)]
     for index in (4, 12, 13, 14, 20):
         base[index] = candle(
@@ -769,6 +770,14 @@ def test_chart_marks_every_rejection_near_the_resistance_zone() -> None:
             high=Decimal("200"),
             low=Decimal("194"),
         )
+    # This candle is near the analytical shelf tolerance but never enters the
+    # narrower zone drawn on the chart, so it must not receive a marker.
+    base[17] = candle(
+        17,
+        Decimal("190"),
+        high=Decimal("196.8"),
+        low=Decimal("189"),
+    )
 
     clusters = _resistance_clusters(
         base,
@@ -778,9 +787,12 @@ def test_chart_marks_every_rejection_near_the_resistance_zone() -> None:
     cluster = max(clusters, key=lambda item: len(item.marker_dates))
 
     assert len(cluster.touch_indices) >= 2
-    assert set(base[index].trading_date for index in (4, 12, 13, 14, 20)).issubset(
-        set(cluster.marker_dates)
+    # The three-candle plateau at 12-14 is one contact/reversal episode. Only
+    # its final candle is confirmed by lower highs and a retreat afterward.
+    assert cluster.marker_dates == tuple(
+        base[index].trading_date for index in (4, 14, 20)
     )
+    assert base[17].trading_date not in cluster.marker_dates
 
 
 def test_intervening_accepted_bodies_invalidate_the_lower_resistance_shelf() -> None:
@@ -1323,6 +1335,23 @@ def test_recent_marginal_probe_extends_live_shelf_instead_of_becoming_retest() -
     assert result.status == TechnicalStatus.CONSOLIDATING
     assert result.resistance_price is not None
     assert result.resistance_price >= Decimal("200.6")
+    active_chart = next(
+        chart
+        for chart in result.chart_evidence
+        if chart.timeframe == result.consolidation_timeframe
+    )
+    assert candles[-1].trading_date not in active_chart.resistance_touch_dates
+    chart_candles = {item.trading_date: item for item in active_chart.candles}
+    below_zone_markers = [
+        (
+            touch_date,
+            chart_candles[touch_date].high,
+            active_chart.resistance_zone_lower,
+        )
+        for touch_date in active_chart.resistance_touch_dates
+        if chart_candles[touch_date].high < active_chart.resistance_zone_lower
+    ]
+    assert below_zone_markers == []
 
 
 def test_failed_breakout_support_becomes_no_setup() -> None:

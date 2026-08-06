@@ -88,7 +88,7 @@ to multiple API or worker replicas.
 | Backend | FastAPI, Pydantic, SQLAlchemy 2, Alembic, async Psycopg |
 | Data | PostgreSQL 18, exact `Numeric`/Python `Decimal` price calculations |
 | Integrations | Upstox market/fundamental data, Telegram Bot API, Prometheus metrics |
-| Runtime | Docker Compose locally, GitHub Actions for CI and scheduled research |
+| Runtime | Docker Compose locally, GitHub Actions for CI |
 | Testing | Pytest, Vitest, Testing Library, synthetic fixtures and mocked network boundaries |
 
 ## Application modes
@@ -177,9 +177,10 @@ watchlist. The backend revalidates every selected listing, shares stored
 research across followers, and never calculates a signal from incomplete
 candle history.
 
-See the [deployment guide](docs/DEPLOYMENT.md) for hosted configuration and
-GitHub Actions secrets. Do not place provider credentials in frontend
-environment variables.
+See the [deployment guide](docs/DEPLOYMENT.md) for the future hosted
+configuration. Hosted research schedules are intentionally disabled until the
+backend and database are deployed. Do not place provider credentials in
+frontend environment variables.
 
 ## Verification
 

@@ -2,7 +2,9 @@
 
 This repository contains deployment configuration but does not deploy itself.
 The planned personal V1 uses Neon PostgreSQL, Render for FastAPI, Vercel for the
-React SPA, and GitHub Actions for verification and the weekday post-market run.
+React SPA, and GitHub Actions for verification. Hosted weekday research and
+morning-digest schedules are intentionally disabled until those services and
+their secret stores are configured.
 
 ## 1. Hosted PostgreSQL
 
@@ -62,7 +64,16 @@ for administrator or mutable API responses.
 Official references: [Vercel external rewrites](https://vercel.com/docs/routing/rewrites),
 [Vite SPA routing on Vercel](https://vercel.com/docs/frameworks/frontend/vite).
 
-## 4. GitHub Actions secrets
+## 4. Future hosted schedules
+
+The repository currently commits only `ci.yml`, which uses placeholder local
+settings and requires no live provider secrets. Do not enable a hosted worker,
+nightly refresh, or morning digest while the API and PostgreSQL database exist
+only on a developer machine.
+
+After the hosted database, API, and Telegram paths pass the acceptance checks
+below, restore scheduled workflow definitions and add repository Actions
+secrets with these exact names:
 
 Add repository Actions secrets with these exact names:
 
@@ -73,11 +84,12 @@ Add repository Actions secrets with these exact names:
 - `POSTGRES_PASSWORD`
 - `UPSTOX_ACCESS_TOKEN`
 
-`ci.yml` uses only placeholder local settings. `nightly.yml` runs at 4:00 PM
-Asia/Kolkata Monday-Friday, applies migrations, schedules active companies, and
-waits through bounded retries. The application still checks the exchange
-calendar and latest completed session, so a weekday schedule does not assume a
-weekday is always a trading day.
+The future nightly workflow should run at 4:00 PM Asia/Kolkata Monday-Friday,
+apply migrations, schedule active companies, and wait through bounded retries.
+The application still checks the exchange calendar and latest completed
+session, so a weekday schedule does not assume a weekday is always a trading
+day. Restore the separate 8:30 AM Asia/Kolkata morning digest only after its
+Telegram delivery path is verified.
 
 Official reference: [GitHub Actions schedule syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule).
 

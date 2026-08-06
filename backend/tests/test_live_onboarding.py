@@ -357,7 +357,7 @@ async def test_handler_persists_candles_before_analysis(
     ]
     assert snapshot is not None
     assert snapshot.source == "UPSTOX"
-    assert snapshot.algorithm_version == "technical-v21"
+    assert snapshot.algorithm_version == "technical-v22"
     assert snapshot.setup_score is not None
     assert snapshot.stage2_score is not None
     assert snapshot.rejection_reasons is not None
@@ -643,7 +643,7 @@ async def test_handler_persists_analysis_when_benchmark_is_unavailable(
         )
     )
     assert snapshot is not None
-    assert snapshot.algorithm_version == "technical-v21"
+    assert snapshot.algorithm_version == "technical-v22"
     assert snapshot.relative_strength_score is None
 
 

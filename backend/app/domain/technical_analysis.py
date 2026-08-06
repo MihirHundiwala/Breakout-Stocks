@@ -93,6 +93,8 @@ class TechnicalAnalysisConfig:
     pivot_right_sessions: int = 2
     resistance_percent_tolerance: Decimal = Decimal("0.0075")
     resistance_atr_tolerance: Decimal = Decimal("0.36")
+    resistance_reversal_percent: Decimal = Decimal("0.001")
+    resistance_reversal_atr: Decimal = Decimal("0.10")
     minimum_resistance_touches: int = 2
     resistance_acceptance_closes: int = 2
     minimum_touch_separation_sessions: int = 3
@@ -144,7 +146,7 @@ class TechnicalAnalysisConfig:
     resistance_quality_weight: Decimal = Decimal("15")
     proximity_weight: Decimal = Decimal("10")
     closing_quality_weight: Decimal = Decimal("5")
-    algorithm_version: str = "technical-v21"
+    algorithm_version: str = "technical-v22"
 
     def __post_init__(self) -> None:
         if not self.consolidation_windows or any(
@@ -264,6 +266,11 @@ class TechnicalAnalysisConfig:
             or not ZERO <= self.maximum_early_recovery_sma200_decline < ONE
         ):
             raise ValueError("Early-recovery thresholds are invalid.")
+        if (
+            self.resistance_reversal_percent < ZERO
+            or self.resistance_reversal_atr < ZERO
+        ):
+            raise ValueError("Resistance-reversal thresholds cannot be negative.")
         if not 1 <= self.minimum_contraction_checks <= 4:
             raise ValueError("Contraction checks must require between one and four passes.")
         if self.traded_value_average_sessions < 1:
@@ -674,6 +681,23 @@ def _extend_chart_evidence_to_analysis_date(
     )
 
 
+def _keep_only_markers_in_final_zone(
+    evidence: TechnicalChartEvidence,
+) -> TechnicalChartEvidence:
+    """Enforce marker geometry after every resistance-shelf rewrite."""
+    candles_by_date = {item.trading_date: item for item in evidence.candles}
+    marker_dates = tuple(
+        touch_date
+        for touch_date in evidence.resistance_touch_dates
+        if (
+            (candle := candles_by_date.get(touch_date)) is not None
+            and candle.high >= evidence.resistance_zone_lower
+            and candle.low <= evidence.resistance_zone_upper
+        )
+    )
+    return replace(evidence, resistance_touch_dates=marker_dates)
+
+
 def _ratio_of_recent_to_previous(
     values: Sequence[Decimal],
     *,
@@ -904,22 +928,50 @@ def _resistance_marker_dates(
     *,
     start_index: int,
     resistance: Decimal,
+    rejection_ceiling: Decimal,
     atr14: Decimal,
     config: TechnicalAnalysisConfig,
 ) -> tuple[date, ...]:
-    """Return every visible rejection while keeping touch independence separate."""
-    tolerance = max(
-        resistance * config.resistance_percent_tolerance,
-        atr14 * config.resistance_atr_tolerance,
+    """Return confirmed zone-reversal contacts for chart evidence.
+
+    Independent, separated touches establish the shelf elsewhere. Markers are
+    intentionally stricter visual evidence: the wick must enter the displayed
+    zone, price must not be accepted above it, and the next periods must confirm
+    that the near-term move actually turned down from that contact.
+    """
+    half_width = max(
+        resistance * config.breakout_percent_buffer,
+        atr14 * config.breakout_atr_buffer,
     )
-    zone_floor = resistance - tolerance
-    return tuple(
-        item.trading_date
-        for item in base[start_index:]
-        if item.high >= zone_floor
-        and item.close <= resistance
-        and _body_high(item) <= resistance
+    zone_floor = resistance - half_width
+    zone_ceiling = max(resistance + half_width, rejection_ceiling)
+    retreat = max(
+        resistance * config.resistance_reversal_percent,
+        atr14 * config.resistance_reversal_atr,
     )
+    right_periods = config.pivot_right_sessions
+    markers: list[date] = []
+    for index in range(start_index, len(base) - right_periods):
+        item = base[index]
+        following = base[index + 1:index + right_periods + 1]
+        touches_zone = item.high >= zone_floor and item.low <= zone_ceiling
+        rejected_zone = (
+            item.close <= zone_ceiling
+            and _body_high(item) <= zone_ceiling
+        )
+        lower_highs_confirmed = max(candle.high for candle in following) < item.high
+        retreated_from_zone = min(
+            item.close,
+            *(candle.close for candle in following),
+        ) <= zone_floor - retreat
+        if (
+            touches_zone
+            and rejected_zone
+            and lower_highs_confirmed
+            and retreated_from_zone
+        ):
+            markers.append(item.trading_date)
+    return tuple(markers)
 
 
 def _has_intervening_resistance_failure(
@@ -1110,6 +1162,7 @@ def _resistance_clusters(
                 base,
                 start_index=shelf_start,
                 resistance=resistance,
+                rejection_ceiling=rejection_ceiling,
                 atr14=atr14,
                 config=config,
             ),
@@ -1215,6 +1268,7 @@ def _wick_resistance_clusters(
                 base,
                 start_index=shelf_start,
                 resistance=resistance,
+                rejection_ceiling=rejection_ceiling,
                 atr14=atr14,
                 config=config,
             ),
@@ -1647,8 +1701,32 @@ def _marginal_breakout_rebase(
             resistance_price=resistance,
             resistance_zone_lower=zone_lower,
             resistance_zone_upper=zone_upper,
-            resistance_touch_dates=tuple(
-                dict.fromkeys((*evidence.resistance_touch_dates, current.trading_date))
+            # Raising the shelf can leave historical marker dates below the new
+            # displayed zone. Re-evaluate the visible candles so every retained
+            # dot still represents an actual, subsequently confirmed contact.
+            resistance_touch_dates=_resistance_marker_dates(
+                (
+                    tuple(
+                        item
+                        for item in _completed_weekly_candles(
+                            ordered,
+                            signal_date=current.trading_date,
+                            include_signal_week=True,
+                        )
+                        if item.trading_date >= evidence.candles[0].trading_date
+                    )
+                    if evidence.timeframe == "WEEKLY"
+                    else tuple(
+                        item
+                        for item in ordered
+                        if item.trading_date >= evidence.candles[0].trading_date
+                    )
+                ),
+                start_index=0,
+                resistance=resistance,
+                rejection_ceiling=zone_upper,
+                atr14=timeframe_atr,
+                config=config,
             ),
         )
         if evidence.timeframe == (result.consolidation_timeframe or "DAILY")
@@ -2551,6 +2629,11 @@ def _analyze_latest(
                 )
                 for item in evidence_candidates
             )
+
+    chart_evidence = tuple(
+        _keep_only_markers_in_final_zone(evidence)
+        for evidence in chart_evidence
+    )
 
     return TechnicalAnalysisResult(
         analysis_date=current.trading_date,
